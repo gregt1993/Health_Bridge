@@ -1,0 +1,66 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Health Bridge Connection",
+        "description": "Set up your Health Bridge integration to receive health data",
+        "data": {
+          "name": "Name",
+          "token": "Security Token"
+        }
+      }
+    },
+    "error": {
+      "invalid_token": "Invalid security token",
+      "unknown": "Unexpected error occurred"
+    },
+    "abort": {
+      "already_configured": "Health Bridge is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Health Bridge Options",
+        "description": "Update your Health Bridge configuration",
+        "data": {
+          "token": "Security Token"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "steps": {
+        "name": "Steps"
+      },
+      "heart_rate": {
+        "name": "Heart Rate"
+      },
+      "active_calories": {
+        "name": "Active Calories"
+      },
+      "resting_heart_rate": {
+        "name": "Resting Heart Rate"
+      },
+      "sleep_duration": {
+        "name": "Sleep Duration"
+      },
+      "distance": {
+        "name": "Distance"
+      },
+      "oxygen_saturation": {
+        "name": "Oxygen Saturation"
+      },
+      "respiratory_rate": {
+        "name": "Respiratory Rate"
+      },
+      "body_mass": {
+        "name": "Body Mass"
+      },
+      "body_fat_percentage": {
+        "name": "Body Fat Percentage"
+      }
+    }
+  }
+}

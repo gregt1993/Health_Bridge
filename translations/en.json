@@ -1,0 +1,30 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up Health Bridge Integration",
+        "description": "Set up your Health Bridge integration by providing your token",
+        "data": {
+          "token": "API Token"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "This Health Bridge account is already configured"
+    },
+    "error": {
+      "invalid_token": "Invalid token",
+      "unknown": "Unexpected error"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Update Health Bridge Configuration",
+        "data": {
+          "token": "API Token"
+        }
+      }
+    }
+  }
+}
