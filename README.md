@@ -1,7 +1,7 @@
 # Health Bridge
 
 <p align="center">
-  <img src="https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/34/78/aa/3478aa38-4bb7-7752-6c34-b79dca3a9f6d/AppIcon-0-1x_U007emarketing-0-7-0-85-220.png/120x120bb.png" alt="Health Assistant Link Icon" width="120"/>
+  <img src="[https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/34/78/aa/3478aa38-4bb7-7752-6c34-b79dca3a9f6d/AppIcon-0-1x_U007emarketing-0-7-0-85-220.png/120x120bb.png](https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/8c/0a/b3/8c0ab330-3e85-27b2-8532-e1f912c29fb6/AppIcon-0-0-1x_U007ephone-0-1-85-220.png/460x0w.webp)" alt="Health Assistant Link Icon" width="120"/>
 </p>
 
 **Health Bridge** is a custom integration for [Home Assistant](https://www.home-assistant.io/) that connects with the iOS app **[Health Assistant Link](https://apps.apple.com/us/app/health-assistant-link/id6745420767)** to bring your Apple Health data into your smart home.
