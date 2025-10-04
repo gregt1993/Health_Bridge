@@ -3,9 +3,9 @@
     "step": {
       "user": {
         "title": "Set up Health Bridge Integration",
-        "description": "Set up your Health Bridge integration by providing your token",
+        "description": "Set up your Health Bridge integration by providing your token, it must match the Health Assistant Link App",
         "data": {
-          "token": "API Token"
+          "token": "Secret Token"
         }
       }
     },
@@ -22,7 +22,7 @@
       "init": {
         "title": "Update Health Bridge Configuration",
         "data": {
-          "token": "API Token"
+          "token": "Secret Token"
         }
       }
     }
