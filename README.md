@@ -1,5 +1,9 @@
 # Health Bridge
 
+<p align="center">
+  <img src="https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/34/78/aa/3478aa38-4bb7-7752-6c34-b79dca3a9f6d/AppIcon-0-1x_U007emarketing-0-7-0-85-220.png/120x120bb.png" alt="Health Assistant Link Icon" width="120"/>
+</p>
+
 **Health Bridge** is a custom integration for [Home Assistant](https://www.home-assistant.io/) that connects with the iOS app **[Health Assistant Link](https://apps.apple.com/us/app/health-assistant-link/id6745420767)** to bring your Apple Health data into your smart home.
 
 ---
@@ -40,7 +44,3 @@ Once HACS is installed, open the repository link below to add **Health Bridge** 
 
 ## License
 This project is licensed under the MIT License.
-
-
-
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?category=integration&repository=health_bridge&owner=gregt1993)
