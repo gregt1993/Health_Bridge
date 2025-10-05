@@ -27,7 +27,7 @@ Once HACS is installed, open the repository link below to add **Health Bridge** 
 ## Setup
 
 1. Install both the **iOS app** and the **Health Bridge** HACS integration.  
-2. In the **Health Assistant Link** app follow the setup and remember you secret token.  
+2. In the **Health Assistant Link** app follow the setup and remember your secret token.  
 3. In Home Assistant, configure the **Health Bridge** integration and **use the same Secret Token**.  
    - ⚠️ The token must match **exactly** in both the iOS app and Home Assistant.  
 4. Once matched, the integration will start syncing your Apple Health data automatically.
