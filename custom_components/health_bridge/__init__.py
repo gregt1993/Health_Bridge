@@ -1,126 +1,230 @@
 """The Health Bridge integration."""
+from __future__ import annotations
+
 import logging
+import re
 import voluptuous as vol
 
-from homeassistant.const import CONF_TOKEN
+from .config_flow import (
+    CONF_NUTRIENT_MASS_UNIT,
+    CONF_WATER_VOLUME_UNIT,
+    DEFAULT_NUTRIENT_MASS_UNIT,
+    DEFAULT_WATER_VOLUME_UNIT,
+)
+
+from homeassistant.const import CONF_TOKEN, Platform
 from homeassistant.components import webhook
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import config_validation as cv
-from homeassistant.components.sensor import SensorStateClass, SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.helpers.entity import Entity
-from homeassistant.helpers.entity_platform import async_get_platforms
 
-from .const import DOMAIN
+from .const import DOMAIN, METRIC_ATTRIBUTES_MAP
 
 _LOGGER = logging.getLogger(__name__)
 
 CONFIG_SCHEMA = vol.Schema(
-    {
-        DOMAIN: vol.Schema(
-            {
-                vol.Required(CONF_TOKEN): cv.string,
-            }
-        )
-    },
+    {DOMAIN: vol.Schema({vol.Required(CONF_TOKEN): cv.string})},
     extra=vol.ALLOW_EXTRA,
 )
 
-class HealthBridgeSensor(SensorEntity):
-    """Sensor for Health Bridge metrics."""
-    
-    def __init__(self, hass, config_entry_id, user_id, metric_name):
-        """Initialize the sensor."""
-        self.hass = hass
-        self._config_entry_id = config_entry_id
-        self._user_id = user_id
-        self.metric_name = metric_name
-        self._attr_native_value = None
-        
-        # Set unique ID
-        self._attr_unique_id = f"{DOMAIN}_{metric_name}_{user_id}"
-        
-        # Set name
-        self._attr_name = f"{metric_name.replace('_', ' ').title()} ({user_id})"
-        
-        # Get metric-specific attributes
-        metric_attrs = self._get_metric_attributes(metric_name)
-        self._attr_native_unit_of_measurement = metric_attrs.get("unit_of_measurement")
-        self._attr_state_class = metric_attrs.get("state_class")
-        self._attr_icon = metric_attrs.get("icon")
-        
-        # This is needed to avoid the error, but we'll set it properly later
-        self.entity_id = f"sensor.{metric_name}_{user_id}"
-    
-    def _get_metric_attributes(self, metric_name):
-        """Get attributes for a specific metric."""
-        metric_attributes_map = {
-            "steps": {"unit_of_measurement": "steps", "state_class": SensorStateClass.TOTAL_INCREASING, "icon": "mdi:walk"},
-            "heart_rate": {"unit_of_measurement": "bpm", "state_class": SensorStateClass.MEASUREMENT, "icon": "mdi:heart-pulse"},
-            "active_calories": {"unit_of_measurement": "kcal", "state_class": SensorStateClass.TOTAL_INCREASING, "icon": "mdi:fire"},
-            "resting_heart_rate": {"unit_of_measurement": "bpm", "state_class": SensorStateClass.MEASUREMENT, "icon": "mdi:heart-pulse"},
-            "sleep_duration": {"unit_of_measurement": "of sleep", "state_class": SensorStateClass.MEASUREMENT, "icon": "mdi:sleep"},
-            "distance": {"unit_of_measurement": "m", "state_class": SensorStateClass.TOTAL_INCREASING, "icon": "mdi:map-marker-distance"},
-            "oxygen_saturation": {"unit_of_measurement": "%", "state_class": SensorStateClass.MEASUREMENT, "icon": "mdi:oxygen-mask"},
-            "respiratory_rate": {"unit_of_measurement": "breaths/min", "state_class": SensorStateClass.MEASUREMENT, "icon": "mdi:lungs"},
-            "body_mass": {"unit_of_measurement": "kg", "state_class": SensorStateClass.MEASUREMENT, "icon": "mdi:weight-kilogram"},
-            "body_fat_percentage": {"unit_of_measurement": "%", "state_class": SensorStateClass.MEASUREMENT, "icon": "mdi:body-percent"},
-            "test_connection": {"unit_of_measurement": None, "state_class": None, "icon": "mdi:check-circle"},
-        }
-        return metric_attributes_map.get(metric_name, {})
-    
-    @property
-    def device_info(self):
-        """Return device information about this entity."""
-        return {
-            "identifiers": {
-                # Unique identifiers within a specific domain
-                (DOMAIN, f"health_bridge_{self._user_id}")
-            },
-            "manufacturer": "Health Bridge",
-            "model": "Health Tracker",
-            "name": f"Health Bridge ({self._user_id})",
-            "sw_version": "1.0",
-        }
-    
-    def update_state(self, value):
-        """Update the sensor state."""
-        if self.metric_name == "sleep_duration":
-            hours = int(value)
-            minutes = int(round((value - hours) * 60))
-            self._attr_native_value = f"{hours}h {minutes}m"
-        else:
-            self._attr_native_value = value
-        
-        # Make sure _attr_name is always set
-        if not hasattr(self, '_attr_name') or not self._attr_name:
-            self._attr_name = f"{self.metric_name.replace('_', ' ').title()} ({self._user_id})"
-        
-        # IMPORTANT: We need to directly update the state instead of using async_schedule_update_ha_state
-        # since our entity isn't properly set up with a platform
-        if hasattr(self, 'entity_id') and self.entity_id:
-            self.hass.states.async_set(
-                self.entity_id,
-                self._attr_native_value,
-                {
-                    "friendly_name": self._attr_name,
-                    "unit_of_measurement": self._attr_native_unit_of_measurement or "",
-                    "state_class": self._attr_state_class or "",
-                    "icon": self._attr_icon or "mdi:chart-line",
-                }
-            )
-            _LOGGER.debug(f"Health Bridge: Set state for {self.entity_id} to {self._attr_native_value}")
-        else:
-            _LOGGER.error(f"Health Bridge: Cannot update state - no entity_id for {self._attr_name}")
+# -------- Aliases (display names, old keys, typos → Swift rawValue keys) --------
+_ALIAS_MAP = {
+    # Activity/movement
+    "active calories": "active_calories",
+    "flights climbed": "flights_climbed",
+    "walking speed": "walking_speed",
+    "walking step length": "walking_step_length",
+    "walking asymmetry": "walking_asymmetry_percentage",
+    "walking asymmetry percentage": "walking_asymmetry_percentage",
+    "walking double support": "walking_double_support_percentage",
+    "walking double support percentage": "walking_double_support_percentage",
+    "swimming distance": "swimming_distance",
+    "6-min walk test distance": "six_minute_walk_test_distance",
+    "six-min walk test distance": "six_minute_walk_test_distance",
+    "stair ascent speed": "stair_ascent_speed",
+    "stair decent speed": "stair_descent_speed",  # typo
+    "stair descent speed": "stair_descent_speed",
+
+    # Body
+    "body mass": "body_mass",
+    "weight": "body_mass",
+    "body fat percentage": "body_fat_percentage",
+    "lean body mass": "lean_body_mass",
+    "waist circumference": "waist_circumference",
+
+    # Vitals
+    "body temperature": "body_temperature",
+    "heart rate": "heart_rate",
+    "resting heart rate": "resting_heart_rate",
+    "walking heart rate avg": "walking_heart_rate_average",
+    "walking heart rate average": "walking_heart_rate_average",
+    "heart rate variability": "heart_rate_variability",
+    "vo2 max": "vo2_max",
+    "blood pressure (systolic)": "blood_pressure_systolic",
+    "blood pressure systolic": "blood_pressure_systolic",
+    "blood pressure (diastolic)": "blood_pressure_diastolic",
+    "blood pressure diastolic": "blood_pressure_diastolic",
+    "blood oxygen": "oxygen_saturation",  # alias
+
+    # Nutrition & glucose
+    "carbohydrates intake": "dietary_carbohydrates",
+    "fat intake": "dietary_fat",
+    "protein intake": "dietary_protein",
+    "protine intake": "dietary_protein",
+    "water intake": "dietary_water",
+    "resting calories": "basal_energy_burned",
+
+    # Sleep/breathing & audio
+    "sleep duration": "sleep_duration",
+    "respiratory rate": "respiratory_rate",
+    "mindful minutes": "mindful_minutes",
+    "headphone audio exposure": "headphone_audio_exposure",
+    "environmental audio exposure": "environmental_audio_exposure",
+}
+
+def _canon_key(name: str) -> str:
+    """Canonicalize a provided metric name to the Swift rawValue key."""
+    key = (name or "").strip().lower()
+    key = re.sub(r"\s+", " ", key)
+    return _ALIAS_MAP.get(key, key.replace(" ", "_"))
+
+def _normalize_metric_and_value(metric_name: str, value):
+    """
+    Map aliases and normalize units to the native units specified in const.py.
+    Handles:
+      - seconds → minutes (sleep/mindful)
+      - grams → kg (body_mass)
+      - m/cm → mm (height/waist)
+      - cm → m (walking_step_length)
+      - mg/dL → mmol/L (blood_glucose)
+      - fractions → percent (oxygen_saturation, body_fat_percentage, walking_*_percentage)
+      - typing coercion for numerics
+    """
+    m = _canon_key(metric_name)
+
+    # ---- Simple numeric coercion ----
+    def _f(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return v
+
+    # ---- Body mass: grams → kg ----
+    if m == "body_mass":
+        v = _f(value)
+        if isinstance(v, (int, float)):
+            # If value looks like grams (e.g., 72000), convert to kg
+            if v > 250:
+                return m, v / 1000.0
+            return m, v
+        return m, value
+
+    # ---- Height: m/cm → mm (native) ----
+    if m == "height":
+        v = _f(value)
+        if isinstance(v, (int, float)):
+            if v < 3.0:            # meters
+                return m, int(round(v * 1000.0))
+            if 30 <= v <= 300:     # centimeters
+                return m, int(round(v * 10.0))
+            return m, int(round(v))  # assume already mm
+        return m, value
+
+    # ---- Waist circumference: cm → mm ----
+    if m == "waist_circumference":
+        v = _f(value)
+        if isinstance(v, (int, float)):
+            if v <= 300:  # cm
+                return m, int(round(v * 10.0))
+            return m, int(round(v))  # mm
+        return m, value
+
+    # ---- Walking step length: cm → m ----
+    if m == "walking_step_length":
+        v = _f(value)
+        if isinstance(v, (int, float)):
+            if 3 <= v <= 300:  # centimeters
+                return m, v / 100.0
+            return m, v  # meters
+        return m, value
+
+    # ---- Percentages: fractions (0..1) → % (0..100), clamp ----
+    if m in ("walking_asymmetry_percentage", "walking_double_support_percentage",
+             "oxygen_saturation", "body_fat_percentage"):
+        v = _f(value)
+        if isinstance(v, (int, float)):
+            if 0.0 <= v <= 1.0:
+                v = v * 100.0
+            return m, max(0.0, min(100.0, v))
+        return m, value
+
+    # ---- Blood glucose: mg/dL → mmol/L if necessary ----
+    if m == "blood_glucose":
+        v = _f(value)
+        if isinstance(v, (int, float)):
+            # If clearly mg/dL (>20 typical mmol/L upper bound), convert:
+            if v > 20.0:
+                return m, round(v * 0.0555, 2)
+            return m, v
+        return m, value
+
+    # ---- Durations (seconds from HK) → minutes (native for our sensors) ----
+    if m in ("sleep_duration", "mindful_minutes"):
+        v = _f(value)
+        if isinstance(v, (int, float)):
+            return m, int(round(v / 60.0))  # minutes
+        return m, value
+
+    # ---- Speeds, distances, energy, rates: parse numeric ----
+    if m in (
+        "walking_speed", "stair_ascent_speed", "stair_descent_speed",
+        "distance", "swimming_distance", "six_minute_walk_test_distance",
+        "active_calories", "basal_energy_burned",
+        "heart_rate", "resting_heart_rate", "walking_heart_rate_average",
+        "heart_rate_variability", "vo2_max",
+        "respiratory_rate",
+        "dietary_carbohydrates", "dietary_fat", "dietary_protein", "dietary_water",
+        "blood_pressure_systolic", "blood_pressure_diastolic",
+        "steps", "flights_climbed",
+        "body_temperature",
+        "headphone_audio_exposure", "environmental_audio_exposure",
+    ):
+        v = _f(value)
+        return m, v
+
+    # Default: return canonical key and original value
+    return m, value
+
+
+# --------------------------
+# Unit preference converters (for dietary metrics)
+# --------------------------
+
+def _convert_mass_for_pref(value_float: float, pref: str) -> tuple[float, str]:
+    """grams <-> ounces; default native is grams."""
+    if pref == "oz":
+        return (value_float / 28.349523125, "oz")
+    return (value_float, "g")
+
+def _convert_volume_for_pref(value_float: float, pref: str) -> tuple[float, str]:
+    """mL <-> US fl oz; default native is mL."""
+    if pref == "fl_oz":
+        return (value_float / 29.5735295625, "fl_oz")
+    return (value_float, "mL")
+
+
+# --------------------------
+# Component setup / teardown
+# --------------------------
 
 async def async_setup(hass: HomeAssistant, config) -> bool:
-    """Set up the Health Bridge component from YAML."""
     _LOGGER.debug("Health Bridge: async_setup started")
-    await async_register_entity_fix_service(hass)
+    await _async_register_entity_fix_service(hass)
+
     if DOMAIN not in config:
-        _LOGGER.debug("Health Bridge: No configuration found in configuration.yaml. Skipping YAML setup.")
+        _LOGGER.debug("Health Bridge: No configuration in configuration.yaml; skipping YAML setup.")
         return True
 
     token = config[DOMAIN].get(CONF_TOKEN)
@@ -128,272 +232,211 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
         _LOGGER.error("Health Bridge: Token is missing from configuration.yaml")
         return False
 
-    # Store token for webhook use
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN]["token"] = token
     hass.data[DOMAIN].setdefault("entities", {})
     _LOGGER.debug("Health Bridge: Token loaded from YAML and stored in hass.data")
-    
-    # Set up webhook for both YAML and UI configurations
-    setup_webhook(hass)
-    
+
+    _setup_webhook(hass)
     return True
 
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Health Bridge from a config entry."""
-    _LOGGER.debug(f"Health Bridge: Setting up config entry {entry.entry_id}")
-    await async_register_entity_fix_service(hass)
-    # Store token for webhook use
+    _LOGGER.debug("Health Bridge: Setting up config entry %s", entry.entry_id)
+    await _async_register_entity_fix_service(hass)
+
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN]["token"] = entry.data[CONF_TOKEN]
     hass.data[DOMAIN]["entry_id"] = entry.entry_id
     hass.data[DOMAIN].setdefault("entities", {})
-    _LOGGER.debug("Health Bridge: Token loaded from config entry and stored in hass.data")
-    
-    # Set up webhook
-    setup_webhook(hass)
-    
+
+    # NEW: cache unit preferences from options
+    opts = entry.options or {}
+    hass.data[DOMAIN]["options"] = {
+        CONF_NUTRIENT_MASS_UNIT: opts.get(CONF_NUTRIENT_MASS_UNIT, DEFAULT_NUTRIENT_MASS_UNIT),
+        CONF_WATER_VOLUME_UNIT: opts.get(CONF_WATER_VOLUME_UNIT, DEFAULT_WATER_VOLUME_UNIT),
+    }
+
+    await hass.config_entries.async_forward_entry_setups(entry, [Platform.SENSOR])
+    _setup_webhook(hass)
     return True
+
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry."""
-    _LOGGER.debug(f"Health Bridge: Unloading config entry {entry.entry_id}")
-    
-    # We don't need to unregister the webhook as it's shared between all instances
-    # Just remove the token associated with this entry if it matches the current one
-    if DOMAIN in hass.data and entry.data[CONF_TOKEN] == hass.data[DOMAIN].get("token"):
+    _LOGGER.debug("Health Bridge: Unloading config entry %s", entry.entry_id)
+    if DOMAIN in hass.data and entry.data.get(CONF_TOKEN) == hass.data[DOMAIN].get("token"):
         hass.data[DOMAIN].pop("token", None)
-        
-        # Note: We're intentionally not removing the webhook_registered flag
-        # as we want to keep track of registration across config entries
-    
     return True
 
 
+# --------------------------
+# Webhook
+# --------------------------
 
-
-async def async_register_entity_fix_service(hass):
-    """Register a service to fix entity names."""
-    async def fix_entity_names_service(call):
-        """Service to fix Health Bridge entity names."""
-        _LOGGER.info("Health Bridge: Starting entity name fix service")
-        
-        # Get all states
-        states = hass.states.async_all()
-        health_bridge_entities = []
-        
-        # Find all potential Health Bridge entities by pattern matching on entity_id
-        for state in states:
-            if state.entity_id.startswith("sensor.") and "_" in state.entity_id:
-                parts = state.entity_id.split(".")
-                if len(parts) == 2:
-                    entity_id_parts = parts[1].split("_")
-                    # Look for pattern: metric_name_user_id
-                    if len(entity_id_parts) >= 2:
-                        health_bridge_entities.append(state)
-        
-        _LOGGER.info(f"Health Bridge: Found {len(health_bridge_entities)} potential Health Bridge entities")
-        
-        # Process each entity
-        fixed_count = 0
-        for state in health_bridge_entities:
-            entity_id = state.entity_id
-            
-            # Extract metric name and user ID from entity_id
-            parts = entity_id.split(".")
-            if len(parts) != 2:
-                continue
-                
-            entity_id_parts = parts[1].split("_")
-            if len(entity_id_parts) < 2:
-                continue
-                
-            # Last part is user_id, everything before is the metric name
-            user_id = entity_id_parts[-1]
-            metric_name = "_".join(entity_id_parts[:-1])
-            
-            # Generate the friendly name
-            friendly_name = f"{metric_name.replace('_', ' ').title()} ({user_id})"
-            
-            # Check if friendly_name is missing or wrong
-            current_friendly_name = state.attributes.get("friendly_name", "")
-            if not current_friendly_name or current_friendly_name != friendly_name:
-                _LOGGER.info(f"Health Bridge: Fixing entity name for {entity_id} to '{friendly_name}'")
-                
-                # Copy existing attributes
-                attributes = dict(state.attributes)
-                
-                # Set friendly name
-                attributes["friendly_name"] = friendly_name
-                
-                
-                
-                # Update the state with the same value but new attributes
-                hass.states.async_set(
-                    entity_id,
-                    state.state,
-                    attributes
-                )
-                fixed_count += 1
-        
-        # Create notification with results
-        message = f"Fixed {fixed_count} Health Bridge entity names."
-        hass.components.persistent_notification.async_create(
-            message,
-            title="Health Bridge Entity Fix",
-            notification_id="health_bridge_entity_fix"
-        )
-        
-        _LOGGER.info(f"Health Bridge: Fixed {fixed_count} entity names")
-
-    # Register the service
-    hass.services.async_register(
-        DOMAIN, 
-        "fix_entity_names", 
-        fix_entity_names_service
-    )
-    _LOGGER.info("Health Bridge: Registered fix_entity_names service")
-
-
-
-def setup_webhook(hass: HomeAssistant) -> None:
-    """Set up webhook for Health Bridge."""
-    
-    # There's no direct way to check if a webhook is registered
-    # We'll use a flag in hass.data to prevent duplicate registrations
+def _setup_webhook(hass: HomeAssistant) -> None:
     if hass.data.get(DOMAIN, {}).get("webhook_registered"):
         _LOGGER.debug("Health Bridge: Webhook already registered")
         return
-    
+
     _LOGGER.debug("Health Bridge: Registering webhook")
-    
+
     async def handle_webhook(hass: HomeAssistant, webhook_id: str, request):
-        """Handle webhook callback."""
-        _LOGGER.debug(f"Health Bridge: Webhook received for webhook_id: {webhook_id}")
+        _LOGGER.debug("Health Bridge: Webhook received (id=%s)", webhook_id)
 
         try:
             data = await request.json()
-            _LOGGER.info(f"Health Bridge: Received data: {data}")
+        except Exception as exc:
+            _LOGGER.error("Health Bridge: Webhook JSON parse error: %s", exc, exc_info=True)
+            return None
 
-            stored_token = hass.data.get(DOMAIN, {}).get("token")
-            received_token = data.get("token")
+        _LOGGER.info("Health Bridge: Received data: %s", data)
 
-            health_data = data.get("data", {})
-            if "test_connection" in health_data:
-                _LOGGER.info("Health Bridge: Received test connection payload. Firing success notification.")
-                hass.bus.async_fire(
-                    "persistent_notification.create",
-                    {
-                        "message": "Health Bridge connection successful!",
-                        "title": "Health Bridge",
-                        "notification_id": "health_bridge_test_success",
-                    },
-                )
-                return None
+        stored_token = hass.data.get(DOMAIN, {}).get("token")
+        received_token = data.get("token")
+        if stored_token and received_token and stored_token != received_token:
+            _LOGGER.warning("Health Bridge: Token mismatch; ignoring payload")
+            return None
 
-            user_id = data.get("user_id", "unknown")
-            health_data = data.get("data", {})
-
-            if not health_data:
-                _LOGGER.debug(f"Health Bridge: Received webhook with no health data for webhook_id: {webhook_id}")
-                return None
-
-            # Get the config entry ID
-            config_entry_id = hass.data.get(DOMAIN, {}).get("entry_id")
-            
-            # Get or initialize the user's entities dictionary
-            user_entities = hass.data[DOMAIN].setdefault("entities", {}).setdefault(user_id, {})
-            
-            # Create or get device first (for all entities)
-            device_registry = dr.async_get(hass)
-            device = device_registry.async_get_or_create(
-                config_entry_id=config_entry_id,
-                identifiers={(DOMAIN, f"health_bridge_{user_id}")},
-                name=f"Health Bridge ({user_id})",
-                manufacturer="Health Bridge",
-                model="Health Tracker",
-                sw_version="1.0",
+        health_data = data.get("data", {}) or {}
+        if "test_connection" in health_data:
+            _LOGGER.info("Health Bridge: Received test connection payload")
+            hass.components.persistent_notification.async_create(
+                "Health Bridge connection successful!",
+                title="Health Bridge",
+                notification_id="health_bridge_test_success",
             )
-            
-            for metric_name, datapoints in health_data.items():
-                if not datapoints:
-                    _LOGGER.debug(f"Health Bridge: Metric '{metric_name}' has no datapoints for webhook_id: {webhook_id}. Skipping.")
-                    continue
+            return None
 
-                latest_value = datapoints[-1].get("value")
-                if latest_value is None:
-                    _LOGGER.debug(f"Health Bridge: Metric '{metric_name}' missing latest value. Skipping update.")
-                    continue
+        user_id = data.get("user_id", "unknown")
+        if not health_data:
+            _LOGGER.debug("Health Bridge: Webhook had no health data")
+            return None
 
-                unique_id = f"{DOMAIN}_{metric_name}_{user_id}"
-                suggested_object_id = f"{metric_name}_{user_id}"
-                entity_id = f"sensor.{suggested_object_id}"
-                
-                # Check if we already have an entity for this metric
-                if metric_name in user_entities:
-                    # Update the existing entity
-                    _LOGGER.debug(f"Health Bridge: Using existing entity for {metric_name}")
-                    entity = user_entities[metric_name]
+        device_registry = dr.async_get(hass)
+        device = device_registry.async_get_or_create(
+            config_entry_id=hass.data.get(DOMAIN, {}).get("entry_id"),
+            identifiers={(DOMAIN, f"health_bridge_{user_id}")},
+            name=f"Health Bridge ({user_id})",
+            manufacturer="Health Bridge",
+            model="Health Tracker",
+            sw_version="1.0",
+        )
+
+        add_sensor = hass.data.get(DOMAIN, {}).get("add_sensor")
+        update_sensor = hass.data.get(DOMAIN, {}).get("update_sensor")
+        if not add_sensor:
+            _LOGGER.warning("Health Bridge: sensor platform not ready (no add_sensor); dropping payload")
+            return None
+
+        user_entities = hass.data[DOMAIN]["entities"].setdefault(user_id, {})
+        entity_registry = er.async_get(hass)
+
+        # Pull unit preferences (with defaults)
+        options = hass.data.get(DOMAIN, {}).get("options", {})
+        nutrient_pref = options.get(CONF_NUTRIENT_MASS_UNIT, DEFAULT_NUTRIENT_MASS_UNIT)  # "g" or "oz"
+        water_pref = options.get(CONF_WATER_VOLUME_UNIT, DEFAULT_WATER_VOLUME_UNIT)       # "mL" or "fl_oz"
+
+        for raw_metric_name, datapoints in health_data.items():
+            if not datapoints:
+                _LOGGER.debug("Health Bridge: Metric '%s' has no datapoints; skipping", raw_metric_name)
+                continue
+
+            latest_value = datapoints[-1].get("value")
+            if latest_value is None:
+                _LOGGER.debug("Health Bridge: Metric '%s' missing latest value; skipping", raw_metric_name)
+                continue
+
+            metric_name, latest_value = _normalize_metric_and_value(raw_metric_name, latest_value)
+
+            # Apply per-integration unit prefs for dietary metrics (convert & override native unit)
+            unit_pref: str | None = None
+            if metric_name in ("dietary_carbohydrates", "dietary_fat", "dietary_protein"):
+                try:
+                    v = float(latest_value)
+                except (TypeError, ValueError):
+                    v = latest_value
                 else:
-                    # Create a new entity
-                    _LOGGER.debug(f"Health Bridge: Creating new entity for metric {metric_name}, user {user_id}")
-                    entity = HealthBridgeSensor(hass, config_entry_id, user_id, metric_name)
-                    
-                    # Get the entity registry
-                    entity_registry = er.async_get(hass)
-                    
-                    # Register the entity in the registry
-                    entity_entry = entity_registry.async_get_or_create(
-                        domain="sensor",
-                        platform=DOMAIN,
-                        unique_id=unique_id,
-                        suggested_object_id=suggested_object_id,
-                        device_id=device.id,
-                        original_name=f"{metric_name.replace('_', ' ').title()} ({user_id})",
-                    )
-                    
-                    # Set the entity_id correctly on our entity object
-                    entity.entity_id = entity_entry.entity_id
-                    _LOGGER.debug(f"Health Bridge: Registered entity with id {entity.entity_id}")
-                    
-                    # Add entity to our tracking
-                    user_entities[metric_name] = entity
-                
-                # Now update the entity state
-                entity.update_state(latest_value)
-                
-                # Ensure the state is properly set with all attributes
-                if hasattr(entity, 'entity_id') and entity.entity_id:
-                    friendly_name = f"{metric_name.replace('_', ' ').title()} ({user_id})"
-                    hass.states.async_set(
-                        entity.entity_id,
-                        entity._attr_native_value if hasattr(entity, '_attr_native_value') else latest_value,
-                        {
-                            "friendly_name": friendly_name,
-                            "unit_of_measurement": entity._attr_native_unit_of_measurement if hasattr(entity, '_attr_native_unit_of_measurement') else None,
-                            "state_class": entity._attr_state_class if hasattr(entity, '_attr_state_class') else None,
-                            "icon": entity._attr_icon if hasattr(entity, '_attr_icon') else None,
-                        }
-                    )
-                    _LOGGER.debug(f"Health Bridge: Explicitly set friendly_name for {entity.entity_id}")
+                    v_pref, unit_pref = _convert_mass_for_pref(v, nutrient_pref)
+                    latest_value = v_pref
+            elif metric_name == "dietary_water":
+                try:
+                    v = float(latest_value)
+                except (TypeError, ValueError):
+                    v = latest_value
+                else:
+                    v_pref, unit_pref = _convert_volume_for_pref(v, water_pref)
+                    latest_value = v_pref
 
-            _LOGGER.info("Health Bridge: Webhook processed successfully.")
-            return None
+            unique_id = f"{DOMAIN}_{metric_name}_{user_id}"
+            suggested_object_id = f"{metric_name}_{user_id}"
+            entity_id = f"sensor.{suggested_object_id}"
 
-        except Exception as e:
-            _LOGGER.error(f"Health Bridge: Error processing webhook: {e}", exc_info=True)
-            return None
+            attrs = METRIC_ATTRIBUTES_MAP.get(metric_name, {}).copy()
+            if "native_unit_of_measurement" not in attrs and "unit_of_measurement" in attrs:
+                attrs["native_unit_of_measurement"] = attrs["unit_of_measurement"]
 
-    webhook.async_register(
-        hass,
-        DOMAIN,
-        "Health Bridge",
-        "health_bridge",
-        handle_webhook
-    )
+            # If a preference was applied above, override native unit
+            if unit_pref:
+                attrs["native_unit_of_measurement"] = unit_pref
 
-    # Mark webhook as registered
+            entry = entity_registry.async_get(entity_id)
+            if entry is None:
+                entry = entity_registry.async_get_or_create(
+                    domain="sensor",
+                    platform=DOMAIN,
+                    unique_id=unique_id,
+                    suggested_object_id=suggested_object_id,
+                    device_id=device.id,
+                    original_name=f"{metric_name.replace('_', ' ').title()} ({user_id})",
+                )
+                user_entities[metric_name] = entry.entity_id
+                add_sensor(user_id, metric_name, attrs, latest_value)
+                _LOGGER.debug("Health Bridge: Created entity %s", entry.entity_id)
+            else:
+                user_entities.setdefault(metric_name, entry.entity_id)
+                if update_sensor:
+                    update_sensor(user_id, metric_name, latest_value)
+                else:
+                    _LOGGER.debug("Health Bridge: update_sensor callback not available yet; skipped update for %s", entry.entity_id)
+
+        _LOGGER.info("Health Bridge: Webhook processed successfully.")
+        return None
+
+    webhook.async_register(hass, DOMAIN, "Health Bridge", "health_bridge", handle_webhook)
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN]["webhook_registered"] = True
-
     _LOGGER.info("Health Bridge webhook registered with ID: health_bridge")
+
+
+# --------------------------
+# Maintenance service
+# --------------------------
+
+async def _async_register_entity_fix_service(hass: HomeAssistant) -> None:
+    async def fix_entity_names_service(call):
+        _LOGGER.info("Health Bridge: Starting entity name fix service")
+        ent_reg = er.async_get(hass)
+        updated = 0
+
+        for entry in list(ent_reg.entities.values()):
+            if entry.domain != "sensor":
+                continue
+            object_id = entry.entity_id.split(".", 1)[-1]
+            parts = object_id.split("_")
+            if len(parts) < 2:
+                continue
+            user_id = parts[-1]
+            metric_name = "_".join(parts[:-1])
+            desired = f"{metric_name.replace('_', ' ').title()} ({user_id})"
+            if not entry.name:
+                ent_reg.async_update_entity(entry.entity_id, name=desired)
+                updated += 1
+
+        msg = f"Updated {updated} Health Bridge entity names in the registry."
+        hass.components.persistent_notification.async_create(
+            msg, title="Health Bridge Entity Fix", notification_id="health_bridge_entity_fix"
+        )
+        _LOGGER.info("Health Bridge: %s", msg)
+
+    hass.services.async_register(DOMAIN, "fix_entity_names", fix_entity_names_service)
+    _LOGGER.info("Health Bridge: Registered fix_entity_names service")
