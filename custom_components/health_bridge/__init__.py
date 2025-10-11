@@ -28,35 +28,27 @@ CONFIG_SCHEMA = vol.Schema(
     {DOMAIN: vol.Schema({vol.Required(CONF_TOKEN): cv.string})},
     extra=vol.ALLOW_EXTRA,
 )
-async def async_migrate_entry(hass, entry):
-    """Migrate old config entry data to the latest version."""
-    from homeassistant.const import CONF_TOKEN
 
-    cur_version = entry.version
-    if cur_version is None:
-        cur_version = 1  # old entries may have no version
+async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
+    """Handle migration of old config entries."""
+    _LOGGER.debug("Migrating config entry for Health Bridge: %s", config_entry.entry_id)
 
-    if cur_version == 1:
-        # Start from existing data/options
-        data = dict(entry.data or {})
-        options = dict(entry.options or {})
+    data = {**config_entry.data}
+    options = {**config_entry.options}
 
-        # Mirror token into options so it becomes editable in the Options UI
-        token = options.get(CONF_TOKEN) or data.get(CONF_TOKEN)
-        if token:
-            options[CONF_TOKEN] = token
+    # Ensure new unit options are present with defaults
+    if CONF_NUTRIENT_MASS_UNIT not in options:
+        options[CONF_NUTRIENT_MASS_UNIT] = DEFAULT_NUTRIENT_MASS_UNIT
+    if CONF_WATER_VOLUME_UNIT not in options:
+        options[CONF_WATER_VOLUME_UNIT] = DEFAULT_WATER_VOLUME_UNIT
 
-        # Seed new unit prefs if missing
-        options.setdefault("nutrient_mass_unit", "g")
-        # Accept legacy stored value "fl_oz" but normalize on next startup elsewhere
-        options.setdefault("water_volume_unit", "mL")
+    hass.config_entries.async_update_entry(
+        config_entry, data=data, options=options
+    )
 
-        # Write back with bumped version
-        hass.config_entries.async_update_entry(entry, data=data, options=options, version=2)
-        return True
-
-    # Already at latest
+    _LOGGER.info("Migration completed for Health Bridge entry %s", config_entry.entry_id)
     return True
+
 
 # -------- Aliases (display names, old keys, typos → Swift rawValue keys) --------
 _ALIAS_MAP = {
@@ -95,7 +87,7 @@ _ALIAS_MAP = {
     "blood pressure systolic": "blood_pressure_systolic",
     "blood pressure (diastolic)": "blood_pressure_diastolic",
     "blood pressure diastolic": "blood_pressure_diastolic",
-    "blood oxygen": "oxygen_saturation",  # alias
+    "blood oxygen": "oxygen_saturation",
 
     # Nutrition & glucose
     "carbohydrates intake": "dietary_carbohydrates",
@@ -114,72 +106,53 @@ _ALIAS_MAP = {
 }
 
 def _canon_key(name: str) -> str:
-    """Canonicalize a provided metric name to the Swift rawValue key."""
     key = (name or "").strip().lower()
     key = re.sub(r"\s+", " ", key)
     return _ALIAS_MAP.get(key, key.replace(" ", "_"))
 
 def _normalize_metric_and_value(metric_name: str, value):
-    """
-    Map aliases and normalize units to the native units specified in const.py.
-    Handles:
-      - seconds → minutes (sleep/mindful)
-      - grams → kg (body_mass)
-      - m/cm → mm (height/waist)
-      - cm → m (walking_step_length)
-      - mg/dL → mmol/L (blood_glucose)
-      - fractions → percent (oxygen_saturation, body_fat_percentage, walking_*_percentage)
-      - typing coercion for numerics
-    """
     m = _canon_key(metric_name)
 
-    # ---- Simple numeric coercion ----
     def _f(v):
         try:
             return float(v)
         except (TypeError, ValueError):
             return v
 
-    # ---- Body mass: grams → kg ----
     if m == "body_mass":
         v = _f(value)
         if isinstance(v, (int, float)):
-            # If value looks like grams (e.g., 72000), convert to kg
-            if v > 250:
+            if v > 250:  # grams → kg
                 return m, v / 1000.0
             return m, v
         return m, value
 
-    # ---- Height: m/cm → mm (native) ----
     if m == "height":
         v = _f(value)
         if isinstance(v, (int, float)):
-            if v < 3.0:            # meters
+            if v < 3.0:            # m → mm
                 return m, int(round(v * 1000.0))
-            if 30 <= v <= 300:     # centimeters
+            if 30 <= v <= 300:     # cm → mm
                 return m, int(round(v * 10.0))
-            return m, int(round(v))  # assume already mm
+            return m, int(round(v))  # assume mm
         return m, value
 
-    # ---- Waist circumference: cm → mm ----
     if m == "waist_circumference":
         v = _f(value)
         if isinstance(v, (int, float)):
-            if v <= 300:  # cm
+            if v <= 300:  # cm → mm
                 return m, int(round(v * 10.0))
             return m, int(round(v))  # mm
         return m, value
 
-    # ---- Walking step length: cm → m ----
     if m == "walking_step_length":
         v = _f(value)
         if isinstance(v, (int, float)):
-            if 3 <= v <= 300:  # centimeters
+            if 3 <= v <= 300:  # cm → m
                 return m, v / 100.0
-            return m, v  # meters
+            return m, v
         return m, value
 
-    # ---- Percentages: fractions (0..1) → % (0..100), clamp ----
     if m in ("walking_asymmetry_percentage", "walking_double_support_percentage",
              "oxygen_saturation", "body_fat_percentage"):
         v = _f(value)
@@ -189,24 +162,20 @@ def _normalize_metric_and_value(metric_name: str, value):
             return m, max(0.0, min(100.0, v))
         return m, value
 
-    # ---- Blood glucose: mg/dL → mmol/L if necessary ----
     if m == "blood_glucose":
         v = _f(value)
         if isinstance(v, (int, float)):
-            # If clearly mg/dL (>20 typical mmol/L upper bound), convert:
-            if v > 20.0:
+            if v > 20.0:  # mg/dL → mmol/L
                 return m, round(v * 0.0555, 2)
             return m, v
         return m, value
 
-    # ---- Durations (seconds from HK) → minutes (native for our sensors) ----
     if m in ("sleep_duration", "mindful_minutes"):
         v = _f(value)
         if isinstance(v, (int, float)):
-            return m, int(round(v / 60.0))  # minutes
+            return m, int(round(v / 60.0))  # seconds → minutes
         return m, value
 
-    # ---- Speeds, distances, energy, rates: parse numeric ----
     if m in (
         "walking_speed", "stair_ascent_speed", "stair_descent_speed",
         "distance", "swimming_distance", "six_minute_walk_test_distance",
@@ -223,22 +192,16 @@ def _normalize_metric_and_value(metric_name: str, value):
         v = _f(value)
         return m, v
 
-    # Default: return canonical key and original value
     return m, value
 
 
-# --------------------------
-# Unit preference converters (for dietary metrics)
-# --------------------------
-
+# ---- Unit preference converters (dietary metrics) ----
 def _convert_mass_for_pref(value_float: float, pref: str) -> tuple[float, str]:
-    """grams <-> ounces; default native is grams."""
     if pref == "oz":
         return (value_float / 28.349523125, "oz")
     return (value_float, "g")
 
 def _convert_volume_for_pref(value_float: float, pref: str) -> tuple[float, str]:
-    """mL <-> US fl oz; default native is mL."""
     # accept either "fl oz" or legacy "fl_oz" from options
     if pref.replace("_", " ") == "fl oz":
         return (value_float / 29.5735295625, "fl oz")
@@ -279,7 +242,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN]["entry_id"] = entry.entry_id
     hass.data[DOMAIN].setdefault("entities", {})
 
-    # Cache token and unit prefs from options (fallback to data for token)
     _cache_entry_options(hass, entry)
 
     # Listen for options updates so token/unit prefs take effect immediately
@@ -300,28 +262,20 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 def _cache_entry_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Cache latest token and unit preferences into hass.data."""
     opts = entry.options or {}
     data = entry.data or {}
 
-    # Prefer token from options (editable in UI); fallback to data
     token = opts.get(CONF_TOKEN) or data.get(CONF_TOKEN)
     if token:
         hass.data.setdefault(DOMAIN, {})
         hass.data[DOMAIN]["token"] = token
 
-    # Normalize water unit spelling to HA's "fl oz"
-    water_pref = opts.get(CONF_WATER_VOLUME_UNIT, DEFAULT_WATER_VOLUME_UNIT)
-    water_pref = water_pref.replace("_", " ")
+    water_pref = (opts.get(CONF_WATER_VOLUME_UNIT, DEFAULT_WATER_VOLUME_UNIT) or "").replace("_", " ")
 
     hass.data[DOMAIN]["options"] = {
         CONF_NUTRIENT_MASS_UNIT: opts.get(CONF_NUTRIENT_MASS_UNIT, DEFAULT_NUTRIENT_MASS_UNIT),
         CONF_WATER_VOLUME_UNIT: water_pref or DEFAULT_WATER_VOLUME_UNIT,
     }
-
-    _LOGGER.debug("Health Bridge: cached options (units: %s, %s)",
-                  hass.data[DOMAIN]["options"].get(CONF_NUTRIENT_MASS_UNIT),
-                  hass.data[DOMAIN]["options"].get(CONF_WATER_VOLUME_UNIT))
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -388,10 +342,11 @@ def _setup_webhook(hass: HomeAssistant) -> None:
             _LOGGER.warning("Health Bridge: sensor platform not ready (no add_sensor); dropping payload")
             return None
 
+        # Access the runtime entity object index built by sensor.py
+        entity_objs = hass.data.get(DOMAIN, {}).get("entity_objs", {})
         user_entities = hass.data[DOMAIN]["entities"].setdefault(user_id, {})
         entity_registry = er.async_get(hass)
 
-        # Pull unit preferences (with defaults, already normalized)
         options = hass.data.get(DOMAIN, {}).get("options", {})
         nutrient_pref = options.get(CONF_NUTRIENT_MASS_UNIT, DEFAULT_NUTRIENT_MASS_UNIT)  # "g" or "oz"
         water_pref = options.get(CONF_WATER_VOLUME_UNIT, DEFAULT_WATER_VOLUME_UNIT)       # "mL" or "fl oz"
@@ -434,11 +389,10 @@ def _setup_webhook(hass: HomeAssistant) -> None:
             attrs = METRIC_ATTRIBUTES_MAP.get(metric_name, {}).copy()
             if "native_unit_of_measurement" not in attrs and "unit_of_measurement" in attrs:
                 attrs["native_unit_of_measurement"] = attrs["unit_of_measurement"]
-
-            # If a preference was applied above, override native unit
             if unit_pref:
                 attrs["native_unit_of_measurement"] = unit_pref  # "g"/"oz" or "mL"/"fl oz"
 
+            # 1) Ensure a registry entry exists (stable entity_id)
             entry = entity_registry.async_get(entity_id)
             if entry is None:
                 entry = entity_registry.async_get_or_create(
@@ -450,14 +404,21 @@ def _setup_webhook(hass: HomeAssistant) -> None:
                     original_name=f"{metric_name.replace('_', ' ').title()} ({user_id})",
                 )
                 user_entities[metric_name] = entry.entity_id
+
+            # 2) Ensure a **runtime entity object** exists even if registry entry pre-existed
+            runtime = entity_objs.get(user_id, {}).get(metric_name)
+            if runtime is None:
                 add_sensor(user_id, metric_name, attrs, latest_value)
-                _LOGGER.debug("Health Bridge: Created entity %s", entry.entity_id)
+                _LOGGER.debug("Health Bridge: Created runtime entity for %s (%s)", metric_name, entry.entity_id)
             else:
-                user_entities.setdefault(metric_name, entry.entity_id)
+                # 3) Normal update path
                 if update_sensor:
                     update_sensor(user_id, metric_name, latest_value)
                 else:
-                    _LOGGER.debug("Health Bridge: update_sensor callback not available yet; skipped update for %s", entry.entity_id)
+                    _LOGGER.debug(
+                        "Health Bridge: update_sensor callback not available; skipped update for %s",
+                        entry.entity_id,
+                    )
 
         _LOGGER.info("Health Bridge: Webhook processed successfully.")
         return None
