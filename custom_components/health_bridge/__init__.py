@@ -28,6 +28,35 @@ CONFIG_SCHEMA = vol.Schema(
     {DOMAIN: vol.Schema({vol.Required(CONF_TOKEN): cv.string})},
     extra=vol.ALLOW_EXTRA,
 )
+async def async_migrate_entry(hass, entry):
+    """Migrate old config entry data to the latest version."""
+    from homeassistant.const import CONF_TOKEN
+
+    cur_version = entry.version
+    if cur_version is None:
+        cur_version = 1  # old entries may have no version
+
+    if cur_version == 1:
+        # Start from existing data/options
+        data = dict(entry.data or {})
+        options = dict(entry.options or {})
+
+        # Mirror token into options so it becomes editable in the Options UI
+        token = options.get(CONF_TOKEN) or data.get(CONF_TOKEN)
+        if token:
+            options[CONF_TOKEN] = token
+
+        # Seed new unit prefs if missing
+        options.setdefault("nutrient_mass_unit", "g")
+        # Accept legacy stored value "fl_oz" but normalize on next startup elsewhere
+        options.setdefault("water_volume_unit", "mL")
+
+        # Write back with bumped version
+        hass.config_entries.async_update_entry(entry, data=data, options=options, version=2)
+        return True
+
+    # Already at latest
+    return True
 
 # -------- Aliases (display names, old keys, typos → Swift rawValue keys) --------
 _ALIAS_MAP = {
@@ -210,8 +239,9 @@ def _convert_mass_for_pref(value_float: float, pref: str) -> tuple[float, str]:
 
 def _convert_volume_for_pref(value_float: float, pref: str) -> tuple[float, str]:
     """mL <-> US fl oz; default native is mL."""
-    if pref == "fl_oz":
-        return (value_float / 29.5735295625, "fl_oz")
+    # accept either "fl oz" or legacy "fl_oz" from options
+    if pref.replace("_", " ") == "fl oz":
+        return (value_float / 29.5735295625, "fl oz")
     return (value_float, "mL")
 
 
@@ -246,16 +276,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await _async_register_entity_fix_service(hass)
 
     hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN]["token"] = entry.data[CONF_TOKEN]
     hass.data[DOMAIN]["entry_id"] = entry.entry_id
     hass.data[DOMAIN].setdefault("entities", {})
 
-    # NEW: cache unit preferences from options
-    opts = entry.options or {}
-    hass.data[DOMAIN]["options"] = {
-        CONF_NUTRIENT_MASS_UNIT: opts.get(CONF_NUTRIENT_MASS_UNIT, DEFAULT_NUTRIENT_MASS_UNIT),
-        CONF_WATER_VOLUME_UNIT: opts.get(CONF_WATER_VOLUME_UNIT, DEFAULT_WATER_VOLUME_UNIT),
-    }
+    # Cache token and unit prefs from options (fallback to data for token)
+    _cache_entry_options(hass, entry)
+
+    # Listen for options updates so token/unit prefs take effect immediately
+    unsub = entry.add_update_listener(_async_options_updated)
+    hass.data[DOMAIN]["unsub_update_listener"] = unsub
 
     await hass.config_entries.async_forward_entry_setups(entry, [Platform.SENSOR])
     _setup_webhook(hass)
@@ -264,9 +293,40 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _LOGGER.debug("Health Bridge: Unloading config entry %s", entry.entry_id)
-    if DOMAIN in hass.data and entry.data.get(CONF_TOKEN) == hass.data[DOMAIN].get("token"):
-        hass.data[DOMAIN].pop("token", None)
+    unsub = hass.data.get(DOMAIN, {}).pop("unsub_update_listener", None)
+    if unsub:
+        unsub()
     return True
+
+
+def _cache_entry_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Cache latest token and unit preferences into hass.data."""
+    opts = entry.options or {}
+    data = entry.data or {}
+
+    # Prefer token from options (editable in UI); fallback to data
+    token = opts.get(CONF_TOKEN) or data.get(CONF_TOKEN)
+    if token:
+        hass.data.setdefault(DOMAIN, {})
+        hass.data[DOMAIN]["token"] = token
+
+    # Normalize water unit spelling to HA's "fl oz"
+    water_pref = opts.get(CONF_WATER_VOLUME_UNIT, DEFAULT_WATER_VOLUME_UNIT)
+    water_pref = water_pref.replace("_", " ")
+
+    hass.data[DOMAIN]["options"] = {
+        CONF_NUTRIENT_MASS_UNIT: opts.get(CONF_NUTRIENT_MASS_UNIT, DEFAULT_NUTRIENT_MASS_UNIT),
+        CONF_WATER_VOLUME_UNIT: water_pref or DEFAULT_WATER_VOLUME_UNIT,
+    }
+
+    _LOGGER.debug("Health Bridge: cached options (units: %s, %s)",
+                  hass.data[DOMAIN]["options"].get(CONF_NUTRIENT_MASS_UNIT),
+                  hass.data[DOMAIN]["options"].get(CONF_WATER_VOLUME_UNIT))
+
+
+async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    _LOGGER.debug("Health Bridge: Options updated; refreshing cached token and prefs")
+    _cache_entry_options(hass, entry)
 
 
 # --------------------------
@@ -331,10 +391,10 @@ def _setup_webhook(hass: HomeAssistant) -> None:
         user_entities = hass.data[DOMAIN]["entities"].setdefault(user_id, {})
         entity_registry = er.async_get(hass)
 
-        # Pull unit preferences (with defaults)
+        # Pull unit preferences (with defaults, already normalized)
         options = hass.data.get(DOMAIN, {}).get("options", {})
         nutrient_pref = options.get(CONF_NUTRIENT_MASS_UNIT, DEFAULT_NUTRIENT_MASS_UNIT)  # "g" or "oz"
-        water_pref = options.get(CONF_WATER_VOLUME_UNIT, DEFAULT_WATER_VOLUME_UNIT)       # "mL" or "fl_oz"
+        water_pref = options.get(CONF_WATER_VOLUME_UNIT, DEFAULT_WATER_VOLUME_UNIT)       # "mL" or "fl oz"
 
         for raw_metric_name, datapoints in health_data.items():
             if not datapoints:
@@ -377,7 +437,7 @@ def _setup_webhook(hass: HomeAssistant) -> None:
 
             # If a preference was applied above, override native unit
             if unit_pref:
-                attrs["native_unit_of_measurement"] = unit_pref
+                attrs["native_unit_of_measurement"] = unit_pref  # "g"/"oz" or "mL"/"fl oz"
 
             entry = entity_registry.async_get(entity_id)
             if entry is None:
