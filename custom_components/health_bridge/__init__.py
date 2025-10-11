@@ -170,11 +170,20 @@ def _normalize_metric_and_value(metric_name: str, value):
             return m, v
         return m, value
 
+    # ---- Durations → normalize to minutes (auto-detect seconds/hours) ----
     if m in ("sleep_duration", "mindful_minutes"):
         v = _f(value)
         if isinstance(v, (int, float)):
-            return m, int(round(v / 60.0))  # seconds → minutes
+            # If it's clearly seconds (>= 3600), convert to minutes
+            if v >= 3600:
+                return m, int(round(v / 60.0))     # seconds → minutes
+            # If it looks like hours (typical sleep 0.5–24h), convert to minutes
+            if 0.5 <= v <= 24:
+                return m, int(round(v * 60.0))     # hours → minutes
+            # Otherwise assume it's already minutes
+            return m, int(round(v))                # minutes
         return m, value
+
 
     if m in (
         "walking_speed", "stair_ascent_speed", "stair_descent_speed",
