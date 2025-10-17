@@ -211,7 +211,7 @@ METRIC_ATTRIBUTES_MAP = {
     # -------- Sleep & Breathing --------
     "sleep_duration": {
         "device_class": "duration",
-        "native_unit_of_measurement": UnitOfTime.MINUTES,  # entity state must be minutes
+        "native_unit_of_measurement": UnitOfTime.HOURS,  # entity state must be minutes
         "state_class": "measurement",
         "icon": "mdi:sleep",
     },
