@@ -215,6 +215,30 @@ METRIC_ATTRIBUTES_MAP = {
         "state_class": "measurement",
         "icon": "mdi:sleep",
     },
+    "sleep_rem_hours": {
+        "device_class": "duration",
+        "native_unit_of_measurement": UnitOfTime.HOURS,  # entity state must be minutes
+        "state_class": "measurement",
+        "icon": "mdi:sleep",
+    },
+    "sleep_core_hours": {
+        "device_class": "duration",
+        "native_unit_of_measurement": UnitOfTime.HOURS,  # entity state must be minutes
+        "state_class": "measurement",
+        "icon": "mdi:sleep",
+    },
+    "sleep_deep_hours": {
+        "device_class": "duration",
+        "native_unit_of_measurement": UnitOfTime.HOURS,  # entity state must be minutes
+        "state_class": "measurement",
+        "icon": "mdi:sleep",
+    },
+    "sleep_awake_hours": {
+        "device_class": "duration",
+        "native_unit_of_measurement": UnitOfTime.HOURS,  # entity state must be minutes
+        "state_class": "measurement",
+        "icon": "mdi:sleep",
+    },
     "respiratory_rate": {
         "native_unit_of_measurement": "breaths/min",
         "state_class": "measurement",
@@ -222,7 +246,7 @@ METRIC_ATTRIBUTES_MAP = {
     },
     "mindful_minutes": {
         "device_class": "duration",
-        "native_unit_of_measurement": UnitOfTime.MINUTES,
+        "native_unit_of_measurement": UnitOfTime.SECONDS,
         "state_class": "total_increasing",
         "icon": "mdi:meditation",
     },

@@ -1,14 +1,17 @@
+
 """The Health Bridge integration."""
+from __future__ import annotations
+
 import logging
+from datetime import datetime, timezone
 import voluptuous as vol
 
-from homeassistant.const import CONF_TOKEN
+from homeassistant.const import CONF_TOKEN, Platform
 from homeassistant.components import webhook
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import config_validation as cv
-from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 
 from .const import DOMAIN, METRIC_ATTRIBUTES_MAP
@@ -20,104 +23,53 @@ CONFIG_SCHEMA = vol.Schema(
     extra=vol.ALLOW_EXTRA,
 )
 
-# --- Helpers ---
-
+# --- Sleep helpers / config ---------------------------------------------------
+# Add near the top (module-level constant)
+_LAST_SYNC_MIN_INTERVAL_SECONDS = 10
 def _normalize_sleep_to_hours(v):
-    """Accept seconds, minutes, or hours; return float hours."""
+    """Assume input is seconds; return float hours rounded to 2 decimals."""
     try:
         v = float(v)
     except (TypeError, ValueError):
         return v
-    # Heuristic:
-    #  > 1440  → very likely SECONDS (e.g., 27000)     → /3600
-    #  > 36    → very likely MINUTES (e.g., 450)       → /60
-    #  else    → already HOURS (e.g., 7.5)
-    if v > 1440:
-        return round(v / 3600.0, 2)
-    if v > 36:
-        return round(v / 60.0, 2)
-    return round(v, 2)
+    return round(v / 3600.0, 2)
 
+# Sleep metrics that should be stored as HOURS
+_SLEEP_HOUR_KEYS = {
+    "sleep_duration",
+    "sleep_rem_hours",
+    "sleep_core_hours",   # Apple's “Core” ≈ light
+    "sleep_deep_hours",
+    "sleep_awake_hours",
+}
 
-class HealthBridgeSensor(SensorEntity):
-    """Sensor for Health Bridge metrics."""
+# Add near the top (module-level constant)
+_LAST_SYNC_MIN_INTERVAL_SECONDS = 10
 
-    def __init__(self, hass: HomeAssistant, config_entry_id: str, user_id: str, metric_name: str):
-        self.hass = hass
-        self._config_entry_id = config_entry_id
-        self._user_id = user_id
-        self.metric_name = metric_name
-        self._attr_native_value = None
+# Pretty display names for specific metrics (enforced each sync)
+_DISPLAY_NAME_OVERRIDES = {
+    "sleep_duration": "Sleep Duration",
+    "sleep_rem_hours": "REM Sleep Duration",
+    "sleep_core_hours": "Light Sleep Duration",
+    "sleep_deep_hours": "Deep Sleep Duration",
+    "sleep_awake_hours": "Sleep Awake Duration",
+    "last_sync_time": "Last Sync Time",
+}
 
-        # IDs and name
-        self._attr_unique_id = f"{DOMAIN}_{metric_name}_{user_id}"
-        self._attr_name = f"{metric_name.replace('_', ' ').title()} ({user_id})"
-        self.entity_id = f"sensor.{metric_name}_{user_id}"  # will be corrected by registry below
-
-        # Attributes from shared map (native fields)
-        metric_attrs = METRIC_ATTRIBUTES_MAP.get(metric_name, {})
-        # fallback so kcal/%/etc don’t get lost
-        self._attr_native_unit_of_measurement = (
-            metric_attrs.get("native_unit_of_measurement") or metric_attrs.get("unit_of_measurement")
-        )
-        self._attr_state_class = metric_attrs.get("state_class")
-        self._attr_icon = metric_attrs.get("icon")
-        self._attr_device_class = metric_attrs.get("device_class")
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, f"health_bridge_{self._user_id}")},
-            "manufacturer": "Health Bridge",
-            "model": "Health Tracker",
-            "name": f"Health Bridge ({self._user_id})",
-            "sw_version": "1.0",
-        }
-
-    def update_state(self, value):
-        """Update the sensor state (no string formatting)."""
-        self._attr_native_value = value
-
-        # Ensure name is set
-        if not getattr(self, "_attr_name", None):
-            self._attr_name = f"{self.metric_name.replace('_', ' ').title()} ({self._user_id})"
-
-        # Directly set state with legacy attributes mirrored so UI shows units
-        if getattr(self, "entity_id", None):
-            self.hass.states.async_set(
-                self.entity_id,
-                self._attr_native_value,
-                {
-                    "friendly_name": self._attr_name,
-                    "unit_of_measurement": self._attr_native_unit_of_measurement,
-                    "state_class": self._attr_state_class,
-                    "icon": self._attr_icon or "mdi:chart-line",
-                },
-            )
-            _LOGGER.debug("Health Bridge: Set state for %s to %r", self.entity_id, self._attr_native_value)
-        else:
-            _LOGGER.error("Health Bridge: Cannot update state - no entity_id for %s", self._attr_name)
-
-
-# --- Component setup ---
+# --- Setup / teardown ---------------------------------------------------------
 
 async def async_setup(hass: HomeAssistant, config) -> bool:
-    _LOGGER.debug("Health Bridge: async_setup started")
     if DOMAIN not in config:
-        _LOGGER.debug("Health Bridge: No YAML config found; skipping YAML setup.")
         return True
-
     token = config[DOMAIN].get(CONF_TOKEN)
     if not token:
-        _LOGGER.error("Health Bridge: Token is missing from configuration.yaml")
+        _LOGGER.error("Health Bridge: Token missing in YAML config")
         return False
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN]["token"] = token
     hass.data[DOMAIN].setdefault("entities", {})
-    _LOGGER.debug("Health Bridge: Token stored in hass.data")
-
-    setup_webhook(hass)
+    _setup_webhook(hass)
     return True
 
 
@@ -128,44 +80,46 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN]["entry_id"] = entry.entry_id
     hass.data[DOMAIN].setdefault("entities", {})
 
-    setup_webhook(hass)
+    # Ensure the sensor platform is loaded so add_sensor/update_sensor are available
+    await hass.config_entries.async_forward_entry_setups(entry, [Platform.SENSOR])
+
+    _setup_webhook(hass)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    _LOGGER.debug("Health Bridge: Unloading config entry %s", entry.entry_id)
-    if DOMAIN in hass.data and entry.data[CONF_TOKEN] == hass.data[DOMAIN].get("token"):
+    if DOMAIN in hass.data and entry.data.get(CONF_TOKEN) == hass.data[DOMAIN].get("token"):
         hass.data[DOMAIN].pop("token", None)
     return True
 
 
-def setup_webhook(hass: HomeAssistant) -> None:
-    """Set up webhook for Health Bridge."""
+# --- Webhook ------------------------------------------------------------------
+
+def _setup_webhook(hass: HomeAssistant) -> None:
     if hass.data.get(DOMAIN, {}).get("webhook_registered"):
-        _LOGGER.debug("Health Bridge: Webhook already registered")
         return
 
-    _LOGGER.debug("Health Bridge: Registering webhook")
-
     async def handle_webhook(hass: HomeAssistant, webhook_id: str, request):
-        _LOGGER.debug("Health Bridge: Webhook received (id=%s)", webhook_id)
         try:
             data = await request.json()
         except Exception as exc:
             _LOGGER.error("Health Bridge: Webhook JSON parse error: %s", exc, exc_info=True)
             return None
 
-        _LOGGER.info("Health Bridge: Received data: %s", data)
-
         stored_token = hass.data.get(DOMAIN, {}).get("token")
         received_token = data.get("token")
+        user_id = data.get("user_id", "unknown")
+
+        # Always stamp last sync time attempt
+        _update_last_sync_time_entity(hass, user_id=user_id)
+
         if stored_token and received_token and stored_token != received_token:
             _LOGGER.warning("Health Bridge: Token mismatch; ignoring payload")
             return None
 
         health_data = data.get("data", {}) or {}
+
         if "test_connection" in health_data:
-            _LOGGER.info("Health Bridge: Received test connection payload")
             hass.components.persistent_notification.async_create(
                 "Health Bridge connection successful!",
                 title="Health Bridge",
@@ -173,7 +127,6 @@ def setup_webhook(hass: HomeAssistant) -> None:
             )
             return None
 
-        user_id = data.get("user_id", "unknown")
         if not health_data:
             _LOGGER.debug("Health Bridge: Webhook had no health data")
             return None
@@ -189,20 +142,24 @@ def setup_webhook(hass: HomeAssistant) -> None:
             sw_version="1.0",
         )
 
-        # Per-user runtime entity map
-        user_entities = hass.data.setdefault(DOMAIN, {}).setdefault("entities", {}).setdefault(user_id, {})
+        # Callbacks from the sensor platform (sensor.py)
+        add_sensor = hass.data.get(DOMAIN, {}).get("add_sensor")
+        update_sensor = hass.data.get(DOMAIN, {}).get("update_sensor")
+        if not add_sensor:
+            _LOGGER.warning("Health Bridge: sensor platform not ready (no add_sensor); dropping payload")
+            return None
+
         entity_registry = er.async_get(hass)
+        user_entities = hass.data[DOMAIN]["entities"].setdefault(user_id, {})
 
         for metric_name, datapoints in health_data.items():
             if not datapoints:
-                _LOGGER.debug("Health Bridge: Metric '%s' has no datapoints; skipping", metric_name)
                 continue
-
             latest_value = datapoints[-1].get("value")
             if latest_value is None:
-                _LOGGER.debug("Health Bridge: Metric '%s' missing latest value; skipping", metric_name)
                 continue
 
+            # Percentages: 0..1 -> 0..100, clamp
             if metric_name in (
                 "body_fat_percentage",
                 "walking_asymmetry_percentage",
@@ -221,65 +178,118 @@ def setup_webhook(hass: HomeAssistant) -> None:
                     elif v > 100.0:
                         latest_value = 100.0
 
-
-
-            # Normalize sleep to HOURS
-            if metric_name == "sleep_duration":
+            # Sleep: seconds -> hours
+            if metric_name in _SLEEP_HOUR_KEYS:
                 latest_value = _normalize_sleep_to_hours(latest_value)
+
+            # Attributes from const map; ensure native unit key present if legacy key used
+            attrs = METRIC_ATTRIBUTES_MAP.get(metric_name, {}).copy()
+            if "native_unit_of_measurement" not in attrs and "unit_of_measurement" in attrs:
+                attrs["native_unit_of_measurement"] = attrs["unit_of_measurement"]
 
             unique_id = f"{DOMAIN}_{metric_name}_{user_id}"
             suggested_object_id = f"{metric_name}_{user_id}"
             entity_id = f"sensor.{suggested_object_id}"
 
-            # Create (or get) runtime entity object
-            if metric_name in user_entities:
-                entity = user_entities[metric_name]
-            else:
-                entity = HealthBridgeSensor(hass, hass.data.get(DOMAIN, {}).get("entry_id"), user_id, metric_name)
-
-                # Registry entry (stable entity_id)
-                entity_entry = entity_registry.async_get_or_create(
+            # --- Ensure the registry entry exists
+            entry = entity_registry.async_get(entity_id)
+            if entry is None:
+                entry = entity_registry.async_get_or_create(
                     domain="sensor",
                     platform=DOMAIN,
                     unique_id=unique_id,
                     suggested_object_id=suggested_object_id,
                     device_id=device.id,
-                    original_name=f"{metric_name.replace('_', ' ').title()} ({user_id})",
+                    original_name=f"{_DISPLAY_NAME_OVERRIDES.get(metric_name, metric_name.replace('_', ' ').title())} ({user_id})",
                 )
-                entity.entity_id = entity_entry.entity_id
-                user_entities[metric_name] = entity
-                _LOGGER.debug("Health Bridge: Registered entity %s", entity.entity_id)
 
-            # Update runtime entity
-            entity.update_state(latest_value)
+            # --- Enforce your desired display name on EVERY sync
+            desired_name = f"{_DISPLAY_NAME_OVERRIDES.get(metric_name, metric_name.replace('_', ' ').title())} ({user_id})"
+            if entry.name != desired_name:
+                entity_registry.async_update_entity(entry.entity_id, name=desired_name)
 
-            # Ensure legacy attributes are present in state (fallback for UI)
-            metric_attrs = METRIC_ATTRIBUTES_MAP.get(metric_name, {})
-            friendly_name = f"{metric_name.replace('_', ' ').title()} ({user_id})"
-            uom = metric_attrs.get("native_unit_of_measurement") or metric_attrs.get("unit_of_measurement")
+            # --- Ensure runtime entity exists and update
+            if metric_name not in user_entities:
+                # Create runtime entity via sensor platform
+                add_sensor(user_id, metric_name, attrs, latest_value)
+                user_entities[metric_name] = entry.entity_id
+            else:
+                if update_sensor:
+                    update_sensor(user_id, metric_name, latest_value)
 
-            hass.states.async_set(
-                entity.entity_id,
-                entity._attr_native_value if hasattr(entity, "_attr_native_value") else latest_value,
-                {
-                    "friendly_name": friendly_name,
-                    "unit_of_measurement": uom,
-                    "state_class": metric_attrs.get("state_class"),
-                    "icon": metric_attrs.get("icon"),
-                },
-            )
-            _LOGGER.debug("Health Bridge: Explicitly set attributes for %s", entity.entity_id)
-
-        _LOGGER.info("Health Bridge: Webhook processed successfully.")
         return None
 
-    webhook.async_register(
-        hass,
-        DOMAIN,
-        "Health Bridge",
-        "health_bridge",
-        handle_webhook,
-    )
+    webhook.async_register(hass, DOMAIN, "Health Bridge", "health_bridge", handle_webhook)
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN]["webhook_registered"] = True
-    _LOGGER.info("Health Bridge webhook registered with ID: health_bridge")
+    _LOGGER.info("Health Bridge webhook registered")
+
+
+# --- Helpers ------------------------------------------------------------------
+
+def _update_last_sync_time_entity(hass: HomeAssistant, user_id: str) -> None:
+    """Create/update per-user last_sync_time entity, but only if ≥10s since last update."""
+    try:
+        metric_name = "last_sync_time"
+        unique_id = f"{DOMAIN}_{metric_name}_{user_id}"
+        suggested_object_id = f"{metric_name}_{user_id}"
+        entity_id = f"sensor.{suggested_object_id}"
+
+        # --- Smoothing: skip if last update was < threshold ago
+        prev_state = hass.states.get(entity_id)
+        now = datetime.now(timezone.utc)
+        if prev_state is not None:
+            last_updated = prev_state.last_updated
+            # Ensure tz-aware for subtraction
+            if last_updated.tzinfo is None:
+                last_updated = last_updated.replace(tzinfo=timezone.utc)
+            elapsed = (now - last_updated).total_seconds()
+            if elapsed < _LAST_SYNC_MIN_INTERVAL_SECONDS:
+                _LOGGER.debug(
+                    "Health Bridge: Skipping last_sync_time update for %s (%.2fs < %ds)",
+                    user_id, elapsed, _LAST_SYNC_MIN_INTERVAL_SECONDS
+                )
+                return
+
+        # We’re past the smoothing window (or no previous state) — proceed.
+        now_iso = now.isoformat()
+
+        ent_reg = er.async_get(hass)
+        dev_reg = dr.async_get(hass)
+
+        # Ensure device exists
+        device = dev_reg.async_get_or_create(
+            config_entry_id=hass.data.get(DOMAIN, {}).get("entry_id"),
+            identifiers={(DOMAIN, f"health_bridge_{user_id}")},
+            name=f"Health Bridge ({user_id})",
+            manufacturer="Health Bridge",
+            model="Health Tracker",
+            sw_version="1.0",
+        )
+
+        # Ensure registry entry exists
+        entry = ent_reg.async_get(entity_id)
+        if entry is None:
+            entry = ent_reg.async_get_or_create(
+                domain="sensor",
+                platform=DOMAIN,
+                unique_id=unique_id,
+                suggested_object_id=suggested_object_id,
+                device_id=device.id,
+                original_name=f"{_DISPLAY_NAME_OVERRIDES.get(metric_name, 'Last Sync Time')} ({user_id})",
+            )
+
+        # Write state (device_class=timestamp defined in const.py)
+        hass.states.async_set(
+            entry.entity_id,
+            now_iso,
+            {
+                "friendly_name": f"{_DISPLAY_NAME_OVERRIDES.get(metric_name, 'Last Sync Time')} ({user_id})",
+                "icon": "mdi:update",
+            },
+        )
+    except Exception as exc:
+        _LOGGER.error(
+            "Health Bridge: Failed to update last_sync_time for %s: %s",
+            user_id, exc, exc_info=True
+        )
