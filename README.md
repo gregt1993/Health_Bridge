@@ -8,6 +8,17 @@
 
 ---
 
+## 💡 Recommendations
+
+For the most reliable syncing:
+
+- Keep **both** the **Health Assistant Link** iPhone app **and** the **Apple Watch app** open in the background.
+- Use **Shortcuts** to schedule automatic syncs at **8:00 AM**, **4:00 PM**, and **12:00 AM**.
+
+This setup creates optimal conditions for consistent, regular syncing of your Apple Health data to Home Assistant.
+
+---
+
 ## 🚀 Installation
 
 ### 1. Install Health Assistant Link (iOS App)
