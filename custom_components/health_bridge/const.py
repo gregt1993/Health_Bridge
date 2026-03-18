@@ -18,6 +18,13 @@ DEFAULT_ICON = "mdi:heart-pulse"
 
 # device_class/state_class are strings; sensor.py coerces them to Enums safely
 METRIC_ATTRIBUTES_MAP = {
+    # -------- Time --------
+    "last_sync_time": {
+    "device_class": "timestamp",
+    "native_unit_of_measurement": None,
+    "state_class": None,
+    "icon": "mdi:update",
+    },
     # -------- Activity / Movement --------
     "steps": {
         "native_unit_of_measurement": "steps",
