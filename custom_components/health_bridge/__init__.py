@@ -286,6 +286,7 @@ def _update_last_sync_time_entity(hass: HomeAssistant, user_id: str) -> None:
             {
                 "friendly_name": f"{_DISPLAY_NAME_OVERRIDES.get(metric_name, 'Last Sync Time')} ({user_id})",
                 "icon": "mdi:update",
+                "device_class": "timestamp",   # <-- ADD THIS
             },
         )
     except Exception as exc:
