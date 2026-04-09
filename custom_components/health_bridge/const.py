@@ -18,13 +18,14 @@ DEFAULT_ICON = "mdi:heart-pulse"
 
 # device_class/state_class are strings; sensor.py coerces them to Enums safely
 METRIC_ATTRIBUTES_MAP = {
-    # -------- Time --------
+    # -------- Internal / Time --------
     "last_sync_time": {
-    "device_class": "timestamp",
-    "native_unit_of_measurement": None,
-    "state_class": None,
-    "icon": "mdi:update",
+        "device_class": "timestamp",
+        "native_unit_of_measurement": None,
+        "state_class": None,
+        "icon": "mdi:update",
     },
+
     # -------- Activity / Movement --------
     "steps": {
         "native_unit_of_measurement": "steps",
@@ -103,7 +104,7 @@ METRIC_ATTRIBUTES_MAP = {
     },
     "height": {
         "device_class": "distance",
-        "native_unit_of_measurement": UnitOfLength.MILLIMETERS,  # native mm
+        "native_unit_of_measurement": UnitOfLength.METERS,
         "state_class": "measurement",
         "icon": "mdi:ruler",
     },
@@ -120,7 +121,7 @@ METRIC_ATTRIBUTES_MAP = {
     },
     "waist_circumference": {
         "device_class": "distance",
-        "native_unit_of_measurement": UnitOfLength.MILLIMETERS,  # native mm
+        "native_unit_of_measurement": UnitOfLength.METERS,
         "state_class": "measurement",
         "icon": "mdi:tape-measure",
     },
@@ -161,14 +162,12 @@ METRIC_ATTRIBUTES_MAP = {
         "icon": "mdi:lungs",
     },
     "blood_pressure_systolic": {
-        "device_class": "pressure",
-        "native_unit_of_measurement": UnitOfPressure.MMHG,
+        "native_unit_of_measurement": "mmHg",
         "state_class": "measurement",
         "icon": "mdi:heart-pulse",
     },
     "blood_pressure_diastolic": {
-        "device_class": "pressure",
-        "native_unit_of_measurement": UnitOfPressure.MMHG,
+        "native_unit_of_measurement": "mmHg",
         "state_class": "measurement",
         "icon": "mdi:heart-pulse",
     },
@@ -180,19 +179,19 @@ METRIC_ATTRIBUTES_MAP = {
 
     # -------- Nutrition & Glucose --------
     "dietary_carbohydrates": {
-    "device_class": "weight",  # NEW
-    "native_unit_of_measurement": UnitOfMass.GRAMS,
-    "state_class": "total_increasing",
-    "icon": "mdi:food-apple",
+        "device_class": "weight",
+        "native_unit_of_measurement": UnitOfMass.GRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:food-apple",
     },
     "dietary_fat": {
-        "device_class": "weight",  # NEW
+        "device_class": "weight",
         "native_unit_of_measurement": UnitOfMass.GRAMS,
         "state_class": "total_increasing",
         "icon": "mdi:food-drumstick",
     },
     "dietary_protein": {
-        "device_class": "weight" , # NEW
+        "device_class": "weight",
         "native_unit_of_measurement": UnitOfMass.GRAMS,
         "state_class": "total_increasing",
         "icon": "mdi:food-steak",
@@ -218,31 +217,31 @@ METRIC_ATTRIBUTES_MAP = {
     # -------- Sleep & Breathing --------
     "sleep_duration": {
         "device_class": "duration",
-        "native_unit_of_measurement": UnitOfTime.HOURS,  # entity state must be minutes
+        "native_unit_of_measurement": UnitOfTime.HOURS,
         "state_class": "measurement",
         "icon": "mdi:sleep",
     },
     "sleep_rem_hours": {
         "device_class": "duration",
-        "native_unit_of_measurement": UnitOfTime.HOURS,  # entity state must be minutes
+        "native_unit_of_measurement": UnitOfTime.HOURS,
         "state_class": "measurement",
         "icon": "mdi:sleep",
     },
     "sleep_core_hours": {
         "device_class": "duration",
-        "native_unit_of_measurement": UnitOfTime.HOURS,  # entity state must be minutes
+        "native_unit_of_measurement": UnitOfTime.HOURS,
         "state_class": "measurement",
         "icon": "mdi:sleep",
     },
     "sleep_deep_hours": {
         "device_class": "duration",
-        "native_unit_of_measurement": UnitOfTime.HOURS,  # entity state must be minutes
+        "native_unit_of_measurement": UnitOfTime.HOURS,
         "state_class": "measurement",
         "icon": "mdi:sleep",
     },
     "sleep_awake_hours": {
         "device_class": "duration",
-        "native_unit_of_measurement": UnitOfTime.HOURS,  # entity state must be minutes
+        "native_unit_of_measurement": UnitOfTime.HOURS,
         "state_class": "measurement",
         "icon": "mdi:sleep",
     },
@@ -260,16 +259,196 @@ METRIC_ATTRIBUTES_MAP = {
 
     # -------- Audio Exposure --------
     "headphone_audio_exposure": {
-        "device_class": "sound_pressure",  # may fallback to None on older HA
-        "native_unit_of_measurement": "dB",
+        "device_class": "sound_pressure",
+        "native_unit_of_measurement": "dB(A)",
         "state_class": "measurement",
         "icon": "mdi:headphones",
     },
     "environmental_audio_exposure": {
         "device_class": "sound_pressure",
-        "native_unit_of_measurement": "dB",
+        "native_unit_of_measurement": "dB(A)",
         "state_class": "measurement",
         "icon": "mdi:volume-high",
+    },
+
+    # -------- Activity (new) --------
+    "stand_time": {
+        "device_class": "duration",
+        "native_unit_of_measurement": UnitOfTime.MINUTES,
+        "state_class": "measurement",
+        "icon": "mdi:human-greeting-variant",
+    },
+    "exercise_time": {
+        "device_class": "duration",
+        "native_unit_of_measurement": UnitOfTime.MINUTES,
+        "state_class": "total_increasing",
+        "icon": "mdi:run-fast",
+    },
+
+    # -------- Dietary macros (new) --------
+    "dietary_energy_consumed": {
+        "native_unit_of_measurement": "kcal",
+        "state_class": "total_increasing",
+        "icon": "mdi:food",
+    },
+    "dietary_fiber": {
+        "native_unit_of_measurement": UnitOfMass.GRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:barley",
+    },
+    "dietary_sugar": {
+        "native_unit_of_measurement": UnitOfMass.GRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:cube-outline",
+    },
+    "dietary_cholesterol": {
+        "native_unit_of_measurement": UnitOfMass.MILLIGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:heart-outline",
+    },
+
+    # -------- Dietary minerals (mg) --------
+    "dietary_calcium": {
+        "native_unit_of_measurement": UnitOfMass.MILLIGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:bone",
+    },
+    "dietary_chloride": {
+        "native_unit_of_measurement": UnitOfMass.MILLIGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:water-outline",
+    },
+    "dietary_iron": {
+        "native_unit_of_measurement": UnitOfMass.MILLIGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:water",
+    },
+    "dietary_magnesium": {
+        "native_unit_of_measurement": UnitOfMass.MILLIGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:water-check",
+    },
+    "dietary_manganese": {
+        "native_unit_of_measurement": UnitOfMass.MILLIGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:flask-outline",
+    },
+    "dietary_phosphorus": {
+        "native_unit_of_measurement": UnitOfMass.MILLIGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:flask",
+    },
+    "dietary_potassium": {
+        "native_unit_of_measurement": UnitOfMass.MILLIGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:fruit-watermelon",
+    },
+    "dietary_sodium": {
+        "native_unit_of_measurement": UnitOfMass.MILLIGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:shaker-outline",
+    },
+    "dietary_zinc": {
+        "native_unit_of_measurement": UnitOfMass.MILLIGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:water-opacity",
+    },
+    "dietary_caffeine": {
+        "native_unit_of_measurement": UnitOfMass.MILLIGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:coffee",
+    },
+    "dietary_copper": {
+        "native_unit_of_measurement": UnitOfMass.MILLIGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:molecule",
+    },
+    "dietary_niacin": {
+        "native_unit_of_measurement": UnitOfMass.MILLIGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:pill",
+    },
+    "dietary_pantothenic_acid": {
+        "native_unit_of_measurement": UnitOfMass.MILLIGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:pill",
+    },
+    "dietary_riboflavin": {
+        "native_unit_of_measurement": UnitOfMass.MILLIGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:pill",
+    },
+    "dietary_thiamin": {
+        "native_unit_of_measurement": UnitOfMass.MILLIGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:pill",
+    },
+    "dietary_vitamin_b6": {
+        "native_unit_of_measurement": UnitOfMass.MILLIGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:pill",
+    },
+    "dietary_vitamin_c": {
+        "native_unit_of_measurement": UnitOfMass.MILLIGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:pill",
+    },
+    "dietary_vitamin_e": {
+        "native_unit_of_measurement": UnitOfMass.MILLIGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:pill",
+    },
+
+    # -------- Dietary vitamins (µg) --------
+    "dietary_biotin": {
+        "native_unit_of_measurement": UnitOfMass.MICROGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:pill",
+    },
+    "dietary_chromium": {
+        "native_unit_of_measurement": UnitOfMass.MICROGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:pill",
+    },
+    "dietary_folate": {
+        "native_unit_of_measurement": UnitOfMass.MICROGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:pill",
+    },
+    "dietary_iodine": {
+        "native_unit_of_measurement": UnitOfMass.MICROGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:pill",
+    },
+    "dietary_molybdenum": {
+        "native_unit_of_measurement": UnitOfMass.MICROGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:pill",
+    },
+    "dietary_selenium": {
+        "native_unit_of_measurement": UnitOfMass.MICROGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:pill",
+    },
+    "dietary_vitamin_a": {
+        "native_unit_of_measurement": UnitOfMass.MICROGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:pill",
+    },
+    "dietary_vitamin_b12": {
+        "native_unit_of_measurement": UnitOfMass.MICROGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:pill",
+    },
+    "dietary_vitamin_d": {
+        "native_unit_of_measurement": UnitOfMass.MICROGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:white-balance-sunny",
+    },
+    "dietary_vitamin_k": {
+        "native_unit_of_measurement": UnitOfMass.MICROGRAMS,
+        "state_class": "total_increasing",
+        "icon": "mdi:pill",
     },
 
     # Connectivity / internal
