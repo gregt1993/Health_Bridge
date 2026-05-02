@@ -93,6 +93,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, config_entry: ConfigEntry, device_entry: dr.DeviceEntry
+) -> bool:
+    """Allow a Health Bridge device to be removed from the device page."""
+    return await async_delete_device_for_entry(hass, config_entry, device_entry.id)
+
+
 # --- Webhook ------------------------------------------------------------------
 
 def _setup_webhook(hass: HomeAssistant) -> None:
@@ -203,11 +210,6 @@ def _setup_webhook(hass: HomeAssistant) -> None:
                     original_name=f"{_DISPLAY_NAME_OVERRIDES.get(metric_name, metric_name.replace('_', ' ').title())} ({user_id})",
                 )
 
-            # --- Enforce your desired display name on EVERY sync
-            desired_name = f"{_DISPLAY_NAME_OVERRIDES.get(metric_name, metric_name.replace('_', ' ').title())} ({user_id})"
-            if entry.name != desired_name:
-                entity_registry.async_update_entity(entry.entity_id, name=desired_name)
-
             # --- Ensure runtime entity exists and update
             if metric_name not in user_entities:
                 # Create runtime entity via sensor platform
@@ -226,6 +228,40 @@ def _setup_webhook(hass: HomeAssistant) -> None:
 
 
 # --- Helpers ------------------------------------------------------------------
+
+async def async_delete_device_for_entry(
+    hass: HomeAssistant, config_entry: ConfigEntry, device_id: str
+) -> bool:
+    """Delete a Health Bridge device and clean up its entities/runtime state."""
+    device_registry = dr.async_get(hass)
+    entity_registry = er.async_get(hass)
+
+    device = device_registry.async_get(device_id)
+    if device is None:
+        return False
+
+    user_id = _get_user_id_from_device(device)
+
+    for entity_entry in list(er.async_entries_for_device(entity_registry, device_id)):
+        hass.states.async_remove(entity_entry.entity_id)
+        entity_registry.async_remove(entity_entry.entity_id)
+
+    device_registry.async_remove_device(device_id)
+
+    domain_data = hass.data.get(DOMAIN, {})
+    if user_id is not None:
+        domain_data.get("entities", {}).pop(user_id, None)
+        domain_data.get("entity_objs", {}).pop(user_id, None)
+
+    return True
+
+
+def _get_user_id_from_device(device: dr.DeviceEntry) -> str | None:
+    """Extract the Health Bridge user id from a device registry entry."""
+    for domain, identifier in device.identifiers:
+        if domain == DOMAIN and identifier.startswith("health_bridge_"):
+            return identifier.removeprefix("health_bridge_")
+    return None
 
 def _update_last_sync_time_entity(hass: HomeAssistant, user_id: str) -> None:
     """Create/update per-user last_sync_time entity, but only if ≥10s since last update."""
@@ -284,9 +320,8 @@ def _update_last_sync_time_entity(hass: HomeAssistant, user_id: str) -> None:
             entry.entity_id,
             now_iso,
             {
-                "friendly_name": f"{_DISPLAY_NAME_OVERRIDES.get(metric_name, 'Last Sync Time')} ({user_id})",
                 "icon": "mdi:update",
-                "device_class": "timestamp",   # <-- ADD THIS
+                "device_class": "timestamp",
             },
         )
     except Exception as exc:
