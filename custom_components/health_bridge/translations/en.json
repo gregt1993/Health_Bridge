@@ -18,9 +18,52 @@
     }
   },
   "options": {
+    "abort": {
+      "device_not_found": "The selected device could not be found",
+      "no_devices": "No Health Bridge devices are available to delete"
+    },
     "step": {
       "init": {
-        "title": "Update Health Bridge Configuration",
+        "title": "Health Bridge Settings",
+        "description": "Choose what you want to manage",
+        "menu_options": {
+          "units": "Units",
+          "edit_delete": "Edit/Delete"
+        },
+        "menu_option_descriptions": {
+          "units": "Open the unit selectors for nutrition and water.",
+          "edit_delete": "Choose a Health Bridge device to delete."
+        }
+      },
+      "units": {
+        "title": "Health Bridge Units",
+        "description": "Update your preferred units",
+        "data": {
+          "nutrient_mass_unit": "Nutrient mass unit",
+          "water_volume_unit": "Water volume unit"
+        }
+      },
+      "edit_delete": {
+        "title": "Edit/Delete Devices",
+        "description": "Choose a device to remove from Health Bridge",
+        "data": {
+          "device_id": "Device"
+        }
+      },
+      "confirm_delete": {
+        "title": "Delete Device",
+        "description": "Delete {device_name} and all of its Health Bridge entities?",
+        "data": {
+          "confirm": "Confirm delete"
+        }
+      }
+    }
+  },
+  "reconfigure": {
+    "step": {
+      "reconfigure": {
+        "title": "Update Health Bridge Connection",
+        "description": "Update the token used by your Health Bridge app",
         "data": {
           "token": "Secret Token"
         }
