@@ -54,6 +54,9 @@ _DISPLAY_NAME_OVERRIDES = {
     "sleep_deep_hours": "Deep Sleep Duration",
     "sleep_awake_hours": "Sleep Awake Duration",
     "last_sync_time": "Last Sync Time",
+    "uv_index": "UV Index",
+    "time_in_daylight": "Time in Daylight",
+    "uv_exposure_sed": "UV Exposure",
 }
 
 # --- Setup / teardown ---------------------------------------------------------
@@ -163,6 +166,7 @@ def _setup_webhook(hass: HomeAssistant) -> None:
             if not datapoints:
                 continue
             latest_value = datapoints[-1].get("value")
+            latest_timestamp = datapoints[-1].get("timestamp")
             if latest_value is None:
                 continue
 
@@ -213,11 +217,22 @@ def _setup_webhook(hass: HomeAssistant) -> None:
             # --- Ensure runtime entity exists and update
             if metric_name not in user_entities:
                 # Create runtime entity via sensor platform
-                add_sensor(user_id, metric_name, attrs, latest_value)
+                add_sensor(
+                    user_id,
+                    metric_name,
+                    attrs,
+                    latest_value,
+                    latest_timestamp,
+                )
                 user_entities[metric_name] = entry.entity_id
             else:
                 if update_sensor:
-                    update_sensor(user_id, metric_name, latest_value)
+                    update_sensor(
+                        user_id,
+                        metric_name,
+                        latest_value,
+                        latest_timestamp,
+                    )
 
         return None
 
