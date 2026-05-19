@@ -39,7 +39,11 @@ async def async_setup_entry(
 
     @callback
     def async_add_sensor(
-        user_id: str, metric_name: str, attributes: Dict[str, Any], latest_value: StateType
+        user_id: str,
+        metric_name: str,
+        attributes: Dict[str, Any],
+        latest_value: StateType,
+        recorded_at: str | None = None,
     ):
         """Create a sensor entity for a metric/user."""
         entity = HealthBridgeSensor(
@@ -48,17 +52,23 @@ async def async_setup_entry(
             attributes=attributes,
             value=latest_value,
             config_entry_id=entry.entry_id,
+            recorded_at=recorded_at,
         )
         async_add_entities([entity], True)
         # index for fast updates
         entity_index.setdefault(user_id, {})[metric_name] = entity
 
     @callback
-    def update_sensor(user_id: str, metric_name: str, value: StateType):
+    def update_sensor(
+        user_id: str,
+        metric_name: str,
+        value: StateType,
+        recorded_at: str | None = None,
+    ):
         """Update an existing sensor entity if present."""
         ent = entity_index.get(user_id, {}).get(metric_name)
         if ent:
-            ent.update_state(value)
+            ent.update_state(value, recorded_at)
         else:
             _LOGGER.debug(
                 "Health Bridge: update_sensor skipped for %s/%s (entity not created yet)",
@@ -84,6 +94,7 @@ class HealthBridgeSensor(SensorEntity):
         attributes: Dict[str, Any],
         value: StateType,
         config_entry_id: str,
+        recorded_at: str | None = None,
     ):
         self._user_id = user_id
         self._metric_name = metric_name
@@ -118,10 +129,14 @@ class HealthBridgeSensor(SensorEntity):
             or attributes.get("unit_of_measurement")
         )
         self._attr_icon = attributes.get("icon")
+        self._attr_suggested_display_precision = attributes.get(
+            "suggested_display_precision"
+        )
 
         # Identity (stable IDs)
         self._attr_unique_id = f"{DOMAIN}_{metric_name}_{user_id}"
         self._attr_name = f"{metric_name.replace('_', ' ').title()} ({user_id})"
+        self._set_recorded_at(recorded_at)
 
         # Device grouping
         device_id = f"health_bridge_{user_id}"
@@ -139,7 +154,7 @@ class HealthBridgeSensor(SensorEntity):
         return self._value
 
     @callback
-    def update_state(self, value: StateType) -> None:
+    def update_state(self, value: StateType, recorded_at: str | None = None) -> None:
         """Update from webhook/service and write state."""
         # Keep raw numeric values; conversions/normalization happen upstream in __init__.py
         if self._metric_name in ("walking_speed", "stair_ascent_speed", "stair_descent_speed"):
@@ -153,4 +168,12 @@ class HealthBridgeSensor(SensorEntity):
                 )
 
         self._value = value
+        self._set_recorded_at(recorded_at)
         self.async_write_ha_state()
+
+    def _set_recorded_at(self, recorded_at: str | None) -> None:
+        """Store the metric sample time from the payload."""
+        if recorded_at:
+            self._attr_extra_state_attributes = {"recorded_at": recorded_at}
+        else:
+            self._attr_extra_state_attributes = None
