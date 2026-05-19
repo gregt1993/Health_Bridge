@@ -176,6 +176,18 @@ METRIC_ATTRIBUTES_MAP = {
         "state_class": "measurement",
         "icon": "mdi:lungs",
     },
+    "uv_index": {
+        "native_unit_of_measurement": None,
+        "state_class": "measurement",
+        "icon": "mdi:white-balance-sunny",
+        "suggested_display_precision": 1,
+    },
+    "uv_exposure_sed": {
+        "native_unit_of_measurement": "SED",
+        "state_class": "measurement",
+        "icon": "mdi:sun-wireless",
+        "suggested_display_precision": 2,
+    },
 
     # -------- Nutrition & Glucose --------
     "dietary_carbohydrates": {
@@ -255,6 +267,12 @@ METRIC_ATTRIBUTES_MAP = {
         "native_unit_of_measurement": UnitOfTime.SECONDS,
         "state_class": "total_increasing",
         "icon": "mdi:meditation",
+    },
+    "time_in_daylight": {
+        "device_class": "duration",
+        "native_unit_of_measurement": UnitOfTime.SECONDS,
+        "state_class": "total_increasing",
+        "icon": "mdi:weather-sunny-alert",
     },
 
     # -------- Audio Exposure --------
