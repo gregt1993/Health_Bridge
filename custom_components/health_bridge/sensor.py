@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any, Dict
 
 from homeassistant.components.sensor import (
@@ -18,6 +19,7 @@ from homeassistant.helpers.typing import StateType
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
+_CLOCK_TIME_KEYS = {"asleep_time", "wake_time"}
 
 
 async def async_setup_platform(hass: HomeAssistant, config, async_add_entities, discovery_info=None):
@@ -136,7 +138,7 @@ class HealthBridgeSensor(SensorEntity):
         # Identity (stable IDs)
         self._attr_unique_id = f"{DOMAIN}_{metric_name}_{user_id}"
         self._attr_name = f"{metric_name.replace('_', ' ').title()} ({user_id})"
-        self._set_recorded_at(recorded_at)
+        self._set_state_metadata(recorded_at)
 
         # Device grouping
         device_id = f"health_bridge_{user_id}"
@@ -151,6 +153,8 @@ class HealthBridgeSensor(SensorEntity):
     @property
     def native_value(self) -> StateType:
         """Return the native (device) value. No human formatting here."""
+        if self._metric_name in _CLOCK_TIME_KEYS:
+            return self._timestamp_state_value()
         return self._value
 
     @callback
@@ -168,12 +172,59 @@ class HealthBridgeSensor(SensorEntity):
                 )
 
         self._value = value
-        self._set_recorded_at(recorded_at)
+        self._set_state_metadata(recorded_at)
         self.async_write_ha_state()
 
-    def _set_recorded_at(self, recorded_at: str | None) -> None:
-        """Store the metric sample time from the payload."""
+    def _set_state_metadata(self, recorded_at: str | None) -> None:
+        """Store auxiliary state metadata from the payload."""
+        attrs: dict[str, Any] = {}
         if recorded_at:
-            self._attr_extra_state_attributes = {"recorded_at": recorded_at}
-        else:
-            self._attr_extra_state_attributes = None
+            attrs["recorded_at"] = recorded_at
+
+        if self._metric_name in _CLOCK_TIME_KEYS:
+            attrs["seconds_since_midnight"] = self._value
+            attrs["formatted_time"] = _format_seconds_since_midnight(self._value)
+            if recorded_at:
+                attrs["recorded_local_time"] = _format_iso_to_local_clock(recorded_at)
+
+        self._attr_extra_state_attributes = attrs or None
+
+    def _timestamp_state_value(self) -> StateType:
+        """Return the payload timestamp for clock-boundary metrics."""
+        recorded_at = None
+        if self._attr_extra_state_attributes:
+            recorded_at = self._attr_extra_state_attributes.get("recorded_at")
+        if not recorded_at:
+            return None
+
+        try:
+            return datetime.fromisoformat(recorded_at.replace("Z", "+00:00"))
+        except ValueError:
+            _LOGGER.debug(
+                "Health Bridge: invalid timestamp for %s: %r",
+                self._metric_name,
+                recorded_at,
+            )
+            return None
+
+
+def _format_seconds_since_midnight(value: StateType) -> str | StateType:
+    """Format seconds since local midnight as a clock time."""
+    try:
+        total_seconds = int(float(value))
+    except (TypeError, ValueError):
+        return value
+
+    total_seconds %= 24 * 60 * 60
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, _seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}"
+
+
+def _format_iso_to_local_clock(value: str) -> str:
+    """Format an ISO timestamp to local wall-clock time when possible."""
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    return dt.astimezone().strftime("%H:%M")
