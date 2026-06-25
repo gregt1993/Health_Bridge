@@ -3,6 +3,7 @@ from __future__ import annotations
 
 # Import only stable unit constants
 from homeassistant.const import (
+    UnitOfEnergy,
     UnitOfLength,
     UnitOfMass,
     UnitOfTime,
@@ -39,7 +40,8 @@ METRIC_ATTRIBUTES_MAP = {
         "icon": "mdi:map-marker-distance",
     },
     "active_calories": {
-        "native_unit_of_measurement": "kcal",
+        "device_class": "energy",
+        "native_unit_of_measurement": UnitOfEnergy.KILO_CALORIE,
         "state_class": "total_increasing",
         "icon": "mdi:fire",
     },
@@ -184,9 +186,15 @@ METRIC_ATTRIBUTES_MAP = {
     },
     "uv_exposure_sed": {
         "native_unit_of_measurement": "SED",
-        "state_class": "measurement",
+        "state_class": "total",
         "icon": "mdi:sun-wireless",
         "suggested_display_precision": 2,
+    },
+    "net_calories": {
+        "device_class": "energy",
+        "native_unit_of_measurement": UnitOfEnergy.KILO_CALORIE,
+        "state_class": "measurement",
+        "icon": "mdi:scale-balance",
     },
 
     # -------- Nutrition & Glucose --------
@@ -221,7 +229,8 @@ METRIC_ATTRIBUTES_MAP = {
         "icon": "mdi:water-percent",
     },
     "basal_energy_burned": {
-        "native_unit_of_measurement": "kcal",
+        "device_class": "energy",
+        "native_unit_of_measurement": UnitOfEnergy.KILO_CALORIE,
         "state_class": "total_increasing",
         "icon": "mdi:fire-alert",
     },
@@ -274,6 +283,18 @@ METRIC_ATTRIBUTES_MAP = {
         "state_class": "total_increasing",
         "icon": "mdi:weather-sunny-alert",
     },
+    "asleep_time": {
+        "device_class": "timestamp",
+        "native_unit_of_measurement": None,
+        "state_class": None,
+        "icon": "mdi:sleep",
+    },
+    "wake_time": {
+        "device_class": "timestamp",
+        "native_unit_of_measurement": None,
+        "state_class": None,
+        "icon": "mdi:weather-sunset-up",
+    },
 
     # -------- Audio Exposure --------
     "headphone_audio_exposure": {
@@ -305,7 +326,8 @@ METRIC_ATTRIBUTES_MAP = {
 
     # -------- Dietary macros (new) --------
     "dietary_energy_consumed": {
-        "native_unit_of_measurement": "kcal",
+        "device_class": "energy",
+        "native_unit_of_measurement": UnitOfEnergy.KILO_CALORIE,
         "state_class": "total_increasing",
         "icon": "mdi:food",
     },
