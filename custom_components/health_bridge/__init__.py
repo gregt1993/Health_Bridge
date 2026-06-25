@@ -57,6 +57,9 @@ _DISPLAY_NAME_OVERRIDES = {
     "uv_index": "UV Index",
     "time_in_daylight": "Time in Daylight",
     "uv_exposure_sed": "UV Exposure",
+    "asleep_time": "Asleep Time",
+    "wake_time": "Wake Time",
+    "net_calories": "Net Calories",
 }
 
 # --- Setup / teardown ---------------------------------------------------------
