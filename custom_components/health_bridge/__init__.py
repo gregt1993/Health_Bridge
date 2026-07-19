@@ -60,6 +60,7 @@ _DISPLAY_NAME_OVERRIDES = {
     "asleep_time": "Asleep Time",
     "wake_time": "Wake Time",
     "net_calories": "Net Calories",
+    "last_apple_workout": "Last Apple Workout",
 }
 
 # --- Setup / teardown ---------------------------------------------------------
@@ -168,8 +169,20 @@ def _setup_webhook(hass: HomeAssistant) -> None:
         for metric_name, datapoints in health_data.items():
             if not datapoints:
                 continue
-            latest_value = datapoints[-1].get("value")
-            latest_timestamp = datapoints[-1].get("timestamp")
+
+            # Workouts arrive as a single dict. The state is a human-readable
+            # composite (type + breakdown); every field is also kept as an
+            # attribute so automations/cards read clean values, not the string.
+            workout_attrs = None
+            if metric_name == "last_apple_workout":
+                payload = datapoints[-1] or {}
+                latest_value = _compose_workout_state(payload)
+                latest_timestamp = payload.get("last_synced") or payload.get("end_time")
+                workout_attrs = dict(payload)
+            else:
+                latest_value = datapoints[-1].get("value")
+                latest_timestamp = datapoints[-1].get("timestamp")
+
             if latest_value is None:
                 continue
 
@@ -179,6 +192,7 @@ def _setup_webhook(hass: HomeAssistant) -> None:
                 "walking_asymmetry_percentage",
                 "walking_double_support_percentage",
                 "oxygen_saturation",
+                "walking_steadiness",
             ):
                 try:
                     v = float(latest_value)
@@ -214,6 +228,7 @@ def _setup_webhook(hass: HomeAssistant) -> None:
                     unique_id=unique_id,
                     suggested_object_id=suggested_object_id,
                     device_id=device.id,
+                    config_entry_id=hass.data.get(DOMAIN, {}).get("entry_id"),
                     original_name=f"{_DISPLAY_NAME_OVERRIDES.get(metric_name, metric_name.replace('_', ' ').title())} ({user_id})",
                 )
 
@@ -226,6 +241,7 @@ def _setup_webhook(hass: HomeAssistant) -> None:
                     attrs,
                     latest_value,
                     latest_timestamp,
+                    workout_attrs,
                 )
                 user_entities[metric_name] = entry.entity_id
             else:
@@ -235,6 +251,7 @@ def _setup_webhook(hass: HomeAssistant) -> None:
                         metric_name,
                         latest_value,
                         latest_timestamp,
+                        workout_attrs,
                     )
 
         return None
@@ -246,6 +263,36 @@ def _setup_webhook(hass: HomeAssistant) -> None:
 
 
 # --- Helpers ------------------------------------------------------------------
+
+def _compose_workout_state(payload: dict) -> str | None:
+    """Build the workout sensor's state: '<Type> · <duration> · <distance?> ·
+    <energy?> · <avg HR?>'. Optional fields are included only when present, so
+    it degrades gracefully across every workout type (a strength session simply
+    has no distance). Returns None if there's no workout type to key on."""
+    workout_type = payload.get("workout_type")
+    if not workout_type:
+        return None
+
+    parts: list[str] = [str(workout_type)]
+
+    duration = payload.get("duration_min")
+    if duration is not None:
+        parts.append(f"{int(round(float(duration)))} min")
+
+    distance_km = payload.get("distance_km")
+    if distance_km:
+        parts.append(f"{distance_km} km")
+
+    energy = payload.get("active_energy_kcal")
+    if energy:
+        parts.append(f"{int(round(float(energy)))} kcal")
+
+    avg_hr = payload.get("average_heart_rate_bpm")
+    if avg_hr:
+        parts.append(f"{int(round(float(avg_hr)))} bpm")
+
+    return " · ".join(parts)
+
 
 async def async_delete_device_for_entry(
     hass: HomeAssistant, config_entry: ConfigEntry, device_id: str
@@ -306,8 +353,6 @@ def _update_last_sync_time_entity(hass: HomeAssistant, user_id: str) -> None:
                 return
 
         # We’re past the smoothing window (or no previous state) — proceed.
-        now_iso = now.isoformat()
-
         ent_reg = er.async_get(hass)
         dev_reg = dr.async_get(hass)
 
@@ -322,26 +367,32 @@ def _update_last_sync_time_entity(hass: HomeAssistant, user_id: str) -> None:
         )
 
         # Ensure registry entry exists
-        entry = ent_reg.async_get(entity_id)
-        if entry is None:
-            entry = ent_reg.async_get_or_create(
+        if ent_reg.async_get(entity_id) is None:
+            ent_reg.async_get_or_create(
                 domain="sensor",
                 platform=DOMAIN,
                 unique_id=unique_id,
                 suggested_object_id=suggested_object_id,
                 device_id=device.id,
+                config_entry_id=hass.data.get(DOMAIN, {}).get("entry_id"),
                 original_name=f"{_DISPLAY_NAME_OVERRIDES.get(metric_name, 'Last Sync Time')} ({user_id})",
             )
 
-        # Write state (device_class=timestamp defined in const.py)
-        hass.states.async_set(
-            entry.entity_id,
-            now_iso,
-            {
-                "icon": "mdi:update",
-                "device_class": "timestamp",
-            },
-        )
+        # Route through the sensor platform so last_sync_time is a real,
+        # restorable entity (survives Core restarts) — not a bare state write,
+        # which would leave no live entity object after startup.
+        domain_data = hass.data.get(DOMAIN, {})
+        add_sensor = domain_data.get("add_sensor")
+        update_sensor = domain_data.get("update_sensor")
+        user_entities = domain_data.setdefault("entities", {}).setdefault(user_id, {})
+        attrs = METRIC_ATTRIBUTES_MAP.get(metric_name, {}).copy()
+
+        if metric_name in user_entities:
+            if update_sensor:
+                update_sensor(user_id, metric_name, now)
+        elif add_sensor:
+            add_sensor(user_id, metric_name, attrs, now)
+            user_entities[metric_name] = entity_id
     except Exception as exc:
         _LOGGER.error(
             "Health Bridge: Failed to update last_sync_time for %s: %s",
