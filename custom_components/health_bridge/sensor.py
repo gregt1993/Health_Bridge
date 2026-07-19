@@ -2,24 +2,47 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime
 from typing import Any, Dict
 
 from homeassistant.components.sensor import (
-    SensorEntity,
+    RestoreSensor,
     SensorDeviceClass,
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
-from .const import DOMAIN
+from .const import DOMAIN, METRIC_ATTRIBUTES_MAP
 
 _LOGGER = logging.getLogger(__name__)
 _CLOCK_TIME_KEYS = {"asleep_time", "wake_time"}
+
+# Attributes that must NOT be re-imported as custom attributes when restoring a
+# previous state: HA-managed keys plus attributes we recompute ourselves.
+_RESTORE_SKIP_ATTRS = {
+    "unit_of_measurement", "device_class", "state_class", "friendly_name",
+    "icon", "attribution", "supported_features", "recorded_at",
+    "seconds_since_midnight", "formatted_time", "recorded_local_time",
+}
+
+
+def _user_id_from_device_id(dev_reg, device_id: str | None) -> str | None:
+    """Recover the Health Bridge user_id from a device's identifiers."""
+    if not device_id:
+        return None
+    device = dev_reg.async_get(device_id)
+    if device is None:
+        return None
+    for domain, identifier in device.identifiers:
+        if domain == DOMAIN and identifier.startswith("health_bridge_"):
+            return identifier.removeprefix("health_bridge_")
+    return None
 
 
 async def async_setup_platform(hass: HomeAssistant, config, async_add_entities, discovery_info=None):
@@ -46,6 +69,7 @@ async def async_setup_entry(
         attributes: Dict[str, Any],
         latest_value: StateType,
         recorded_at: str | None = None,
+        extra_attributes: Dict[str, Any] | None = None,
     ):
         """Create a sensor entity for a metric/user."""
         entity = HealthBridgeSensor(
@@ -55,6 +79,7 @@ async def async_setup_entry(
             value=latest_value,
             config_entry_id=entry.entry_id,
             recorded_at=recorded_at,
+            extra_attributes=extra_attributes,
         )
         async_add_entities([entity], True)
         # index for fast updates
@@ -66,11 +91,12 @@ async def async_setup_entry(
         metric_name: str,
         value: StateType,
         recorded_at: str | None = None,
+        extra_attributes: Dict[str, Any] | None = None,
     ):
         """Update an existing sensor entity if present."""
         ent = entity_index.get(user_id, {}).get(metric_name)
         if ent:
-            ent.update_state(value, recorded_at)
+            ent.update_state(value, recorded_at, extra_attributes)
         else:
             _LOGGER.debug(
                 "Health Bridge: update_sensor skipped for %s/%s (entity not created yet)",
@@ -81,11 +107,59 @@ async def async_setup_entry(
     # expose callbacks for webhook/services
     hass.data[DOMAIN]["add_sensor"] = async_add_sensor
     hass.data[DOMAIN]["update_sensor"] = update_sensor
+
+    # Recreate previously-registered sensors on startup so their last values
+    # restore immediately (via RestoreSensor) instead of showing unavailable
+    # until the next webhook. Also repopulates the index maps so later webhooks
+    # reuse these entities rather than creating duplicates.
+    ent_reg = er.async_get(hass)
+    dev_reg = dr.async_get(hass)
+    entities_map: Dict[str, Dict[str, str]] = hass.data[DOMAIN].setdefault("entities", {})
+    restored: list[HealthBridgeSensor] = []
+
+    # Discover by platform (always set), NOT by config-entry: entries created
+    # dynamically by the webhook historically lacked a config_entry_id, so
+    # async_entries_for_config_entry would miss them.
+    for reg_entry in list(ent_reg.entities.values()):
+        if reg_entry.platform != DOMAIN or reg_entry.domain != "sensor" or reg_entry.disabled:
+            continue
+        user_id = _user_id_from_device_id(dev_reg, reg_entry.device_id)
+        if not user_id:
+            continue
+        metric_name = reg_entry.unique_id.removeprefix(f"{DOMAIN}_").removesuffix(f"_{user_id}")
+        if not metric_name or metric_name == reg_entry.unique_id:
+            continue
+        if metric_name in entity_index.get(user_id, {}):
+            continue  # already live
+
+        attrs = METRIC_ATTRIBUTES_MAP.get(metric_name, {}).copy()
+        if "native_unit_of_measurement" not in attrs and "unit_of_measurement" in attrs:
+            attrs["native_unit_of_measurement"] = attrs["unit_of_measurement"]
+
+        entity = HealthBridgeSensor(
+            user_id=user_id,
+            metric_name=metric_name,
+            attributes=attrs,
+            value=None,
+            config_entry_id=entry.entry_id,
+        )
+        entity_index.setdefault(user_id, {})[metric_name] = entity
+        entities_map.setdefault(user_id, {})[metric_name] = reg_entry.entity_id
+        restored.append(entity)
+
+    if restored:
+        async_add_entities(restored)
+        _LOGGER.debug("Health Bridge: recreated %d sensor(s) on startup", len(restored))
+
     return True
 
 
-class HealthBridgeSensor(SensorEntity):
-    """Representation of a Health Bridge sensor."""
+class HealthBridgeSensor(RestoreSensor):
+    """Representation of a Health Bridge sensor.
+
+    Uses RestoreSensor so the last native value + custom attributes survive a
+    Home Assistant restart until the next webhook arrives.
+    """
 
     _attr_has_entity_name = True  # Let HA manage friendly_name
 
@@ -97,11 +171,14 @@ class HealthBridgeSensor(SensorEntity):
         value: StateType,
         config_entry_id: str,
         recorded_at: str | None = None,
+        extra_attributes: Dict[str, Any] | None = None,
     ):
         self._user_id = user_id
         self._metric_name = metric_name
         self._config_entry_id = config_entry_id
         self._value = value
+        # Arbitrary state attributes supplied by the webhook (e.g. workout fields).
+        self._extra_attributes: Dict[str, Any] = dict(extra_attributes) if extra_attributes else {}
 
         # --- Coerce device_class/state_class (strings from const.py -> Enums), safe on older HA
         dc = attributes.get("device_class")
@@ -150,6 +227,37 @@ class HealthBridgeSensor(SensorEntity):
             sw_version="1.0",
         )
 
+    async def async_added_to_hass(self) -> None:
+        """Restore the last value/attributes after a restart if we don't have a
+        live value yet (i.e. this entity was recreated on startup, not from a
+        fresh webhook)."""
+        await super().async_added_to_hass()
+        if self._value is not None:
+            return
+
+        last_data = await self.async_get_last_sensor_data()
+        if last_data is not None and last_data.native_value is not None:
+            value = last_data.native_value
+            # Drop corrupted non-finite floats rather than surfacing them.
+            if isinstance(value, float) and not math.isfinite(value):
+                value = None
+            self._value = value
+
+        recorded_at = None
+        last_state = await self.async_get_last_state()
+        if last_state is not None:
+            recorded_at = last_state.attributes.get("recorded_at")
+            restored = {
+                k: v for k, v in last_state.attributes.items()
+                if k not in _RESTORE_SKIP_ATTRS
+            }
+            if restored and not self._extra_attributes:
+                self._extra_attributes = restored
+
+        if self._value is not None:
+            self._set_state_metadata(recorded_at)
+            self.async_write_ha_state()
+
     @property
     def native_value(self) -> StateType:
         """Return the native (device) value. No human formatting here."""
@@ -158,7 +266,12 @@ class HealthBridgeSensor(SensorEntity):
         return self._value
 
     @callback
-    def update_state(self, value: StateType, recorded_at: str | None = None) -> None:
+    def update_state(
+        self,
+        value: StateType,
+        recorded_at: str | None = None,
+        extra_attributes: Dict[str, Any] | None = None,
+    ) -> None:
         """Update from webhook/service and write state."""
         # Keep raw numeric values; conversions/normalization happen upstream in __init__.py
         if self._metric_name in ("walking_speed", "stair_ascent_speed", "stair_descent_speed"):
@@ -171,13 +284,16 @@ class HealthBridgeSensor(SensorEntity):
                     value,
                 )
 
+        if extra_attributes is not None:
+            self._extra_attributes = dict(extra_attributes)
+
         self._value = value
         self._set_state_metadata(recorded_at)
         self.async_write_ha_state()
 
     def _set_state_metadata(self, recorded_at: str | None) -> None:
         """Store auxiliary state metadata from the payload."""
-        attrs: dict[str, Any] = {}
+        attrs: dict[str, Any] = dict(self._extra_attributes)
         if recorded_at:
             attrs["recorded_at"] = recorded_at
 
