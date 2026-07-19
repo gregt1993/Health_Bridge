@@ -27,6 +27,15 @@ METRIC_ATTRIBUTES_MAP = {
         "icon": "mdi:update",
     },
 
+    # -------- Workouts --------
+    # Text-state sensor: state is the workout type, details live in attributes.
+    "last_apple_workout": {
+        "device_class": None,
+        "native_unit_of_measurement": None,
+        "state_class": None,
+        "icon": "mdi:run",
+    },
+
     # -------- Activity / Movement --------
     "steps": {
         "native_unit_of_measurement": "steps",
@@ -77,6 +86,39 @@ METRIC_ATTRIBUTES_MAP = {
         "native_unit_of_measurement": UnitOfLength.METERS,
         "state_class": "total_increasing",
         "icon": "mdi:swim",
+    },
+    "cycling_distance": {
+        "device_class": "distance",
+        "native_unit_of_measurement": UnitOfLength.METERS,
+        "state_class": "total_increasing",
+        "icon": "mdi:bike",
+    },
+    "wrist_temperature": {
+        "device_class": "temperature",
+        "native_unit_of_measurement": UnitOfTemperature.CELSIUS,
+        "state_class": "measurement",
+        "icon": "mdi:thermometer",
+    },
+    "walking_steadiness": {
+        "native_unit_of_measurement": PERCENTAGE,  # 0..100
+        "state_class": "measurement",
+        "icon": "mdi:figure-walk",
+    },
+    "cardio_recovery": {
+        "device_class": "heart_rate",
+        "native_unit_of_measurement": "bpm",
+        "state_class": "measurement",
+        "icon": "mdi:heart-pulse",
+    },
+    "physical_effort": {
+        "native_unit_of_measurement": "MET",
+        "state_class": "measurement",
+        "icon": "mdi:run-fast",
+    },
+    "insulin_delivery": {
+        "native_unit_of_measurement": "IU",
+        "state_class": "total_increasing",
+        "icon": "mdi:needle",
     },
     "six_minute_walk_test_distance": {
         "device_class": "distance",
@@ -299,13 +341,13 @@ METRIC_ATTRIBUTES_MAP = {
     # -------- Audio Exposure --------
     "headphone_audio_exposure": {
         "device_class": "sound_pressure",
-        "native_unit_of_measurement": "dB(A)",
+        "native_unit_of_measurement": "dBA",
         "state_class": "measurement",
         "icon": "mdi:headphones",
     },
     "environmental_audio_exposure": {
         "device_class": "sound_pressure",
-        "native_unit_of_measurement": "dB(A)",
+        "native_unit_of_measurement": "dBA",
         "state_class": "measurement",
         "icon": "mdi:volume-high",
     },
