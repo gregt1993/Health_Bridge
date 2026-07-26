@@ -6,8 +6,10 @@ import logging
 from datetime import datetime, timezone
 import voluptuous as vol
 
+from aiohttp import web
+
 from homeassistant.const import CONF_TOKEN, Platform
-from homeassistant.components import webhook
+from homeassistant.components import webhook, persistent_notification
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import device_registry as dr
@@ -95,9 +97,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    if DOMAIN in hass.data and entry.data.get(CONF_TOKEN) == hass.data[DOMAIN].get("token"):
-        hass.data[DOMAIN].pop("token", None)
-    return True
+    # Unload the platform we forwarded in setup — without this, reloading the
+    # entry forwards Platform.SENSOR a second time and HA raises
+    # "Config entry ... has already been set up!".
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, [Platform.SENSOR])
+
+    if unload_ok:
+        domain_data = hass.data.get(DOMAIN, {})
+
+        # Unregister the webhook so setup re-registers cleanly on reload.
+        if domain_data.get("webhook_registered"):
+            try:
+                webhook.async_unregister(hass, "health_bridge")
+            except (ValueError, KeyError):
+                pass
+            domain_data["webhook_registered"] = False
+
+        # Drop per-entry runtime state so a subsequent setup rebuilds it and
+        # the sensor platform recreates entities from the registry.
+        for key in ("token", "add_sensor", "update_sensor", "entity_objs", "entities"):
+            domain_data.pop(key, None)
+
+    return unload_ok
 
 
 async def async_remove_config_entry_device(
@@ -124,17 +145,33 @@ def _setup_webhook(hass: HomeAssistant) -> None:
         received_token = data.get("token")
         user_id = data.get("user_id", "unknown")
 
-        # Always stamp last sync time attempt
-        _update_last_sync_time_entity(hass, user_id=user_id)
+        # Normalize: an accidental trailing space (in the app field OR the
+        # integration config) must not silently reject every sync.
+        stored_norm = stored_token.strip() if isinstance(stored_token, str) else ""
+        received_norm = received_token.strip() if isinstance(received_token, str) else ""
 
-        if stored_token and received_token and stored_token != received_token:
-            _LOGGER.warning("Health Bridge: Token mismatch; ignoring payload")
-            return None
+        # Authenticate BEFORE touching any state. Reject if no token is
+        # configured (can't authenticate) or the token doesn't match, and
+        # return HTTP 401 so the client sees a real failure instead of a 200.
+        if not stored_norm or received_norm != stored_norm:
+            # Privacy-safe diagnostics (never log the secret itself):
+            #  stored_present=False -> integration didn't load a token at setup
+            #  differing lengths    -> whitespace/typo in one side
+            _LOGGER.warning(
+                "Health Bridge: rejecting payload — token mismatch "
+                "(stored_present=%s stored_len=%d received_len=%d)",
+                bool(stored_norm), len(stored_norm), len(received_norm),
+            )
+            return web.Response(status=401, text="invalid token")
+
+        # Authenticated: record the sync attempt.
+        _update_last_sync_time_entity(hass, user_id=user_id)
 
         health_data = data.get("data", {}) or {}
 
         if "test_connection" in health_data:
-            hass.components.persistent_notification.async_create(
+            persistent_notification.async_create(
+                hass,
                 "Health Bridge connection successful!",
                 title="Health Bridge",
                 notification_id="health_bridge_test_success",
@@ -228,7 +265,6 @@ def _setup_webhook(hass: HomeAssistant) -> None:
                     unique_id=unique_id,
                     suggested_object_id=suggested_object_id,
                     device_id=device.id,
-                    config_entry_id=hass.data.get(DOMAIN, {}).get("entry_id"),
                     original_name=f"{_DISPLAY_NAME_OVERRIDES.get(metric_name, metric_name.replace('_', ' ').title())} ({user_id})",
                 )
 
@@ -374,7 +410,6 @@ def _update_last_sync_time_entity(hass: HomeAssistant, user_id: str) -> None:
                 unique_id=unique_id,
                 suggested_object_id=suggested_object_id,
                 device_id=device.id,
-                config_entry_id=hass.data.get(DOMAIN, {}).get("entry_id"),
                 original_name=f"{_DISPLAY_NAME_OVERRIDES.get(metric_name, 'Last Sync Time')} ({user_id})",
             )
 
