@@ -28,12 +28,21 @@
         "title": "Health Bridge Settings",
         "description": "Choose what you want to manage",
         "menu_options": {
+          "token": "Change secret token",
           "units": "Units",
           "edit_delete": "Edit/Delete"
         },
         "menu_option_descriptions": {
+          "token": "Update the secret token shared with the Health Assistant Link app.",
           "units": "Open the unit selectors for nutrition and water.",
           "edit_delete": "Choose a Health Bridge device to delete."
+        }
+      },
+      "token": {
+        "title": "Change Secret Token",
+        "description": "Enter the new secret token. It must match the token set in the Health Assistant Link app.",
+        "data": {
+          "token": "Security Token"
         }
       },
       "units": {
@@ -99,9 +108,6 @@
       },
       "body_mass": {
         "name": "Body Mass"
-      },
-      "body_fat_percentage": {
-        "name": "Body Fat Percentage"
       }
     }
   }
