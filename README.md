@@ -117,5 +117,11 @@ Once HACS is installed, add **Health Bridge** using the repository link below:
 
 ---
 
+## Community Projects
+
+- 📊 Check out this Dashboard card by BrainDeLook: https://github.com/BrainDeLook/health-bridge-dashboard-card
+
+---
+
 ## 📄 License
 This project is licensed under the MIT License.
