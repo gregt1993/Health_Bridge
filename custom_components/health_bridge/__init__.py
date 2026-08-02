@@ -1,4 +1,3 @@
-
 """The Health Bridge integration."""
 from __future__ import annotations
 
@@ -202,6 +201,46 @@ def _setup_webhook(hass: HomeAssistant) -> None:
 
         entity_registry = er.async_get(hass)
         user_entities = hass.data[DOMAIN]["entities"].setdefault(user_id, {})
+
+        # Medications (iOS 26+) arrive as an array of per-medication dicts — not
+        # {timestamp, value} datapoints — so handle them before the generic loop.
+        # One TEXT sensor per medication: state = pending/partial/taken, and every
+        # other field (taken, scheduled, dose_taken, unit, summary…) as attributes.
+        medications = health_data.pop("medications", None)
+        if isinstance(medications, list):
+            for med in medications:
+                if not isinstance(med, dict):
+                    continue
+                med_id = med.get("id")
+                state = med.get("state")
+                if not med_id or state is None:
+                    continue
+
+                metric_name = f"medication_{med_id}"
+                med_attrs = {k: v for k, v in med.items() if k not in ("id", "state")}
+                display = med.get("name") or str(med_id).replace("_", " ").title()
+
+                unique_id = f"{DOMAIN}_{metric_name}_{user_id}"
+                suggested_object_id = f"{metric_name}_{user_id}"
+                entity_id = f"sensor.{suggested_object_id}"
+
+                entry = entity_registry.async_get(entity_id)
+                if entry is None:
+                    entry = entity_registry.async_get_or_create(
+                        domain="sensor",
+                        platform=DOMAIN,
+                        unique_id=unique_id,
+                        suggested_object_id=suggested_object_id,
+                        device_id=device.id,
+                        original_name=f"Medication: {display} ({user_id})",
+                    )
+
+                if metric_name not in user_entities:
+                    # Empty attrs => plain text sensor (no device_class/state_class/unit).
+                    add_sensor(user_id, metric_name, {}, state, None, med_attrs)
+                    user_entities[metric_name] = entry.entity_id
+                elif update_sensor:
+                    update_sensor(user_id, metric_name, state, None, med_attrs)
 
         for metric_name, datapoints in health_data.items():
             if not datapoints:
