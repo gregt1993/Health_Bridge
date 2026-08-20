@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+import math
+import re
 from datetime import datetime, timezone
 import voluptuous as vol
 
@@ -16,6 +18,15 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.config_entries import ConfigEntry
 
 from .const import DOMAIN, METRIC_ATTRIBUTES_MAP
+from .history_backfill import (
+    BACKFILL_PROTOCOL_VERSION,
+    BackfillCompatibilityError,
+    BackfillEntityNotReadyError,
+    BackfillUnavailableError,
+    BackfillValidationError,
+    async_commit_backfill,
+    validate_backfill_series,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,6 +38,8 @@ CONFIG_SCHEMA = vol.Schema(
 # --- Sleep helpers / config ---------------------------------------------------
 # Add near the top (module-level constant)
 _LAST_SYNC_MIN_INTERVAL_SECONDS = 10
+_LIVE_PROTOCOL_VERSION = 1
+_LIVE_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 def _normalize_sleep_to_hours(v):
     """Assume input is seconds; return float hours rounded to 2 decimals."""
     try:
@@ -44,8 +57,182 @@ _SLEEP_HOUR_KEYS = {
     "sleep_awake_hours",
 }
 
-# Add near the top (module-level constant)
-_LAST_SYNC_MIN_INTERVAL_SECONDS = 10
+# Metrics whose raw value arrives as a 0..1 fraction and must be scaled to a
+# 0..100 percentage (and clamped).
+_PERCENT_0_1_KEYS = {
+    "body_fat_percentage",
+    "walking_asymmetry_percentage",
+    "walking_double_support_percentage",
+    "oxygen_saturation",
+    "walking_steadiness",
+}
+
+
+def _normalize_metric_value(metric_name, value):
+    """Normalize a raw datapoint value to the sensor's native scale.
+
+    Mirrors exactly the per-metric conversions applied to the live state so that
+    back-filled history points sit on the same scale as the current value.
+    """
+    if value is None:
+        return value
+
+    if metric_name in _PERCENT_0_1_KEYS:
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return value
+        if 0.0 <= v <= 1.0:
+            return v * 100.0
+        if v < 0.0:
+            return 0.0
+        if v > 100.0:
+            return 100.0
+        return value  # already a native 0..100 percentage — leave untouched
+
+    if metric_name in _SLEEP_HOUR_KEYS:
+        return _normalize_sleep_to_hours(value)
+
+    return value
+
+
+def _parse_epoch(value):
+    """Parse a datapoint timestamp (ISO-8601 string or number) to epoch seconds."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    return None
+
+
+def _backfill_error(message: str, status: int, code: str) -> web.Response:
+    """Return a stable, machine-readable backfill failure response."""
+    return web.json_response(
+        {
+            "ok": False,
+            "committed": False,
+            "protocol_version": BACKFILL_PROTOCOL_VERSION,
+            "error": code,
+            "message": message,
+        },
+        status=status,
+    )
+
+
+def _resolve_backfill_entity_id(
+    hass: HomeAssistant, user_id: str, metric_name: str
+) -> str | None:
+    """Resolve the entity actually registered for a metric without creating it."""
+    unique_id = f"{DOMAIN}_{metric_name}_{user_id}"
+    registry_entity_id = er.async_get(hass).async_get_entity_id(
+        "sensor", DOMAIN, unique_id
+    )
+    if registry_entity_id:
+        return registry_entity_id
+
+    runtime_entity_id = (
+        hass.data.get(DOMAIN, {})
+        .get("entities", {})
+        .get(user_id, {})
+        .get(metric_name)
+    )
+    if runtime_entity_id:
+        return runtime_entity_id
+    return None
+
+
+def _prepare_backfill_batch(hass: HomeAssistant, data: dict, user_id: str):
+    """Strictly validate and normalize an explicit backfill request."""
+    if not isinstance(user_id, str) or not user_id or len(user_id) > 128:
+        raise BackfillValidationError("user_id must be a non-empty string")
+    if data.get("protocol_version") != BACKFILL_PROTOCOL_VERSION:
+        raise BackfillValidationError(
+            f"protocol_version must be {BACKFILL_PROTOCOL_VERSION}"
+        )
+
+    health_data = data.get("data")
+    if not isinstance(health_data, dict) or not health_data:
+        raise BackfillValidationError("backfill data must be a non-empty object")
+
+    series_by_entity: dict[str, list[tuple[float, float]]] = {}
+    for metric_name, datapoints in health_data.items():
+        attrs = METRIC_ATTRIBUTES_MAP.get(metric_name)
+        if not attrs or not attrs.get("state_class"):
+            raise BackfillValidationError(
+                f"metric '{metric_name}' is not eligible for numeric history backfill"
+            )
+        if not isinstance(datapoints, list):
+            raise BackfillValidationError(
+                f"metric '{metric_name}' must contain an array of datapoints"
+            )
+
+        entity_id = _resolve_backfill_entity_id(hass, user_id, metric_name)
+        if entity_id is None:
+            raise BackfillEntityNotReadyError(
+                f"metric '{metric_name}' does not have a live sensor yet"
+            )
+
+        points: list[tuple[float, float]] = []
+        for datapoint in datapoints:
+            if not isinstance(datapoint, dict):
+                raise BackfillValidationError(
+                    f"metric '{metric_name}' contains a malformed datapoint"
+                )
+            timestamp = _parse_epoch(datapoint.get("timestamp"))
+            if timestamp is None:
+                raise BackfillValidationError(
+                    f"metric '{metric_name}' contains an invalid timestamp"
+                )
+            try:
+                value = float(
+                    _normalize_metric_value(metric_name, datapoint.get("value"))
+                )
+            except (TypeError, ValueError) as exc:
+                raise BackfillValidationError(
+                    f"metric '{metric_name}' contains a non-numeric value"
+                ) from exc
+            if not math.isfinite(value):
+                raise BackfillValidationError(
+                    f"metric '{metric_name}' contains a non-finite value"
+                )
+            points.append((timestamp, value))
+
+        series_by_entity[entity_id] = points
+
+    return validate_backfill_series(data.get("request_id"), series_by_entity)
+
+
+async def _handle_backfill_webhook(
+    hass: HomeAssistant, data: dict, user_id: str
+) -> web.Response:
+    """Commit an explicit backfill request and acknowledge only after commit."""
+    try:
+        batch = _prepare_backfill_batch(hass, data, user_id)
+        result = await async_commit_backfill(hass, batch)
+    except BackfillValidationError as exc:
+        return _backfill_error(str(exc), 422, "invalid_backfill")
+    except BackfillEntityNotReadyError as exc:
+        return _backfill_error(str(exc), 503, "entity_not_ready")
+    except BackfillCompatibilityError as exc:
+        return _backfill_error(str(exc), 409, "unsupported_recorder")
+    except BackfillUnavailableError as exc:
+        return _backfill_error(str(exc), 503, "recorder_unavailable")
+    except Exception:
+        _LOGGER.exception(
+            "Health Bridge: backfill commit failed request=%s",
+            data.get("request_id", "invalid"),
+        )
+        return _backfill_error(
+            "recorder commit failed", 500, "backfill_commit_failed"
+        )
+
+    return web.json_response(result.as_dict())
 
 # Pretty display names for specific metrics (enforced each sync)
 _DISPLAY_NAME_OVERRIDES = {
@@ -139,6 +326,10 @@ def _setup_webhook(hass: HomeAssistant) -> None:
         except Exception as exc:
             _LOGGER.error("Health Bridge: Webhook JSON parse error: %s", exc, exc_info=True)
             return None
+        if not isinstance(data, dict):
+            return web.json_response(
+                {"ok": False, "error": "invalid_payload"}, status=400
+            )
 
         stored_token = hass.data.get(DOMAIN, {}).get("token")
         received_token = data.get("token")
@@ -163,10 +354,36 @@ def _setup_webhook(hass: HomeAssistant) -> None:
             )
             return web.Response(status=401, text="invalid token")
 
-        # Authenticated: record the sync attempt.
-        _update_last_sync_time_entity(hass, user_id=user_id)
+        request_type = data.get("request_type") or "live"
+        if request_type == "backfill":
+            return await _handle_backfill_webhook(hass, data, user_id)
+        if request_type != "live":
+            return web.json_response(
+                {"ok": False, "error": "unsupported_request_type"}, status=422
+            )
 
         health_data = data.get("data", {}) or {}
+        if not isinstance(health_data, dict):
+            return web.json_response(
+                {"ok": False, "error": "invalid_health_data"}, status=422
+            )
+
+        # New clients require a request-matched acknowledgement. Legacy live
+        # payloads remain supported, but an explicitly versioned request must
+        # provide valid metadata so a generic HTTP 2xx can never be mistaken
+        # for an applied sync.
+        request_id = data.get("request_id")
+        protocol_version = data.get("protocol_version")
+        explicit_live_ack = request_id is not None or protocol_version is not None
+        if explicit_live_ack:
+            if protocol_version != _LIVE_PROTOCOL_VERSION:
+                return web.json_response(
+                    {"ok": False, "error": "unsupported_live_protocol"}, status=422
+                )
+            if not isinstance(request_id, str) or not _LIVE_REQUEST_ID_RE.fullmatch(request_id):
+                return web.json_response(
+                    {"ok": False, "error": "invalid_request_id"}, status=422
+                )
 
         if "test_connection" in health_data:
             persistent_notification.async_create(
@@ -175,11 +392,20 @@ def _setup_webhook(hass: HomeAssistant) -> None:
                 title="Health Bridge",
                 notification_id="health_bridge_test_success",
             )
-            return None
+            return web.json_response(
+                {
+                    "ok": True,
+                    "backfill_protocol": BACKFILL_PROTOCOL_VERSION,
+                    "backfill_ack": "committed",
+                    "statistics_policy": "history_only",
+                }
+            )
 
         if not health_data:
             _LOGGER.debug("Health Bridge: Webhook had no health data")
-            return None
+            return web.json_response(
+                {"ok": False, "error": "empty_health_data"}, status=422
+            )
 
         # Ensure device exists
         device_registry = dr.async_get(hass)
@@ -197,7 +423,9 @@ def _setup_webhook(hass: HomeAssistant) -> None:
         update_sensor = hass.data.get(DOMAIN, {}).get("update_sensor")
         if not add_sensor:
             _LOGGER.warning("Health Bridge: sensor platform not ready (no add_sensor); dropping payload")
-            return None
+            return web.json_response(
+                {"ok": False, "error": "sensor_platform_not_ready"}, status=503
+            )
 
         entity_registry = er.async_get(hass)
         user_entities = hass.data[DOMAIN]["entities"].setdefault(user_id, {})
@@ -206,6 +434,10 @@ def _setup_webhook(hass: HomeAssistant) -> None:
         # {timestamp, value} datapoints — so handle them before the generic loop.
         # One TEXT sensor per medication: state = pending/partial/taken, and every
         # other field (taken, scheduled, dose_taken, unit, summary…) as attributes.
+        health_data = dict(health_data)
+        received_entities = len(health_data)
+        applied_entities = 0
+        skipped_entities = 0
         medications = health_data.pop("medications", None)
         if isinstance(medications, list):
             for med in medications:
@@ -239,11 +471,18 @@ def _setup_webhook(hass: HomeAssistant) -> None:
                     # Empty attrs => plain text sensor (no device_class/state_class/unit).
                     add_sensor(user_id, metric_name, {}, state, None, med_attrs)
                     user_entities[metric_name] = entry.entity_id
+                    applied_entities += 1
                 elif update_sensor:
                     update_sensor(user_id, metric_name, state, None, med_attrs)
+                    applied_entities += 1
+                else:
+                    skipped_entities += 1
+        elif medications is not None:
+            skipped_entities += 1
 
         for metric_name, datapoints in health_data.items():
             if not datapoints:
+                skipped_entities += 1
                 continue
 
             # Workouts arrive as a single dict. The state is a human-readable
@@ -260,31 +499,13 @@ def _setup_webhook(hass: HomeAssistant) -> None:
                 latest_timestamp = datapoints[-1].get("timestamp")
 
             if latest_value is None:
+                skipped_entities += 1
                 continue
 
-            # Percentages: 0..1 -> 0..100, clamp
-            if metric_name in (
-                "body_fat_percentage",
-                "walking_asymmetry_percentage",
-                "walking_double_support_percentage",
-                "oxygen_saturation",
-                "walking_steadiness",
-            ):
-                try:
-                    v = float(latest_value)
-                except (TypeError, ValueError):
-                    pass
-                else:
-                    if 0.0 <= v <= 1.0:
-                        latest_value = v * 100.0
-                    elif v < 0.0:
-                        latest_value = 0.0
-                    elif v > 100.0:
-                        latest_value = 100.0
-
-            # Sleep: seconds -> hours
-            if metric_name in _SLEEP_HOUR_KEYS:
-                latest_value = _normalize_sleep_to_hours(latest_value)
+            # Normalize to the sensor's native scale (percent 0..1 -> 0..100 and
+            # clamp; sleep seconds -> hours). The same helper feeds the history
+            # back-fill below so current value and history stay on one scale.
+            latest_value = _normalize_metric_value(metric_name, latest_value)
 
             # Attributes from const map; ensure native unit key present if legacy key used
             attrs = METRIC_ATTRIBUTES_MAP.get(metric_name, {}).copy()
@@ -319,6 +540,7 @@ def _setup_webhook(hass: HomeAssistant) -> None:
                     workout_attrs,
                 )
                 user_entities[metric_name] = entry.entity_id
+                applied_entities += 1
             else:
                 if update_sensor:
                     update_sensor(
@@ -328,8 +550,46 @@ def _setup_webhook(hass: HomeAssistant) -> None:
                         latest_timestamp,
                         workout_attrs,
                     )
+                    applied_entities += 1
+                else:
+                    skipped_entities += 1
 
-        return None
+        if applied_entities == 0:
+            _LOGGER.warning(
+                "Health Bridge: live request %s applied no entities (received=%d skipped=%d)",
+                request_id or "legacy", received_entities, skipped_entities,
+            )
+            return web.json_response(
+                {
+                    "ok": False,
+                    "applied": False,
+                    "error": "no_entities_applied",
+                    "request_type": "live",
+                    "protocol_version": _LIVE_PROTOCOL_VERSION,
+                    "request_id": request_id,
+                    "received_entities": received_entities,
+                    "updated_entities": 0,
+                    "skipped_entities": skipped_entities,
+                },
+                status=422,
+            )
+
+        # This is a commit marker, not an attempt marker: move it only after at
+        # least one runtime entity accepted a value.
+        last_sync_updated = _update_last_sync_time_entity(hass, user_id=user_id)
+        return web.json_response(
+            {
+                "ok": True,
+                "applied": True,
+                "request_type": "live",
+                "protocol_version": _LIVE_PROTOCOL_VERSION,
+                "request_id": request_id,
+                "received_entities": received_entities,
+                "updated_entities": applied_entities,
+                "skipped_entities": skipped_entities,
+                "last_sync_updated": last_sync_updated,
+            }
+        )
 
     webhook.async_register(hass, DOMAIN, "Health Bridge", "health_bridge", handle_webhook)
     hass.data.setdefault(DOMAIN, {})
@@ -403,7 +663,7 @@ def _get_user_id_from_device(device: dr.DeviceEntry) -> str | None:
             return identifier.removeprefix("health_bridge_")
     return None
 
-def _update_last_sync_time_entity(hass: HomeAssistant, user_id: str) -> None:
+def _update_last_sync_time_entity(hass: HomeAssistant, user_id: str) -> bool:
     """Create/update per-user last_sync_time entity, but only if ≥10s since last update."""
     try:
         metric_name = "last_sync_time"
@@ -425,7 +685,7 @@ def _update_last_sync_time_entity(hass: HomeAssistant, user_id: str) -> None:
                     "Health Bridge: Skipping last_sync_time update for %s (%.2fs < %ds)",
                     user_id, elapsed, _LAST_SYNC_MIN_INTERVAL_SECONDS
                 )
-                return
+                return False
 
         # We’re past the smoothing window (or no previous state) — proceed.
         ent_reg = er.async_get(hass)
@@ -464,11 +724,15 @@ def _update_last_sync_time_entity(hass: HomeAssistant, user_id: str) -> None:
         if metric_name in user_entities:
             if update_sensor:
                 update_sensor(user_id, metric_name, now)
+                return True
         elif add_sensor:
             add_sensor(user_id, metric_name, attrs, now)
             user_entities[metric_name] = entity_id
+            return True
+        return False
     except Exception as exc:
         _LOGGER.error(
             "Health Bridge: Failed to update last_sync_time for %s: %s",
             user_id, exc, exc_info=True
         )
+        return False
