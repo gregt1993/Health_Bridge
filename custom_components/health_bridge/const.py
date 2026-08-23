@@ -1,4 +1,5 @@
 """Constants for the Health Bridge integration (enum-safe, HA-compatible)."""
+
 from __future__ import annotations
 
 # Import only stable unit constants
@@ -307,6 +308,22 @@ METRIC_ATTRIBUTES_MAP = {
         "native_unit_of_measurement": UnitOfTime.HOURS,
         "state_class": "measurement",
         "icon": "mdi:sleep",
+    },
+    "sleep_unspecified_hours": {
+        "device_class": "duration",
+        "native_unit_of_measurement": UnitOfTime.HOURS,
+        "state_class": "measurement",
+        "icon": "mdi:sleep",
+    },
+    # Hypnogram stage code over time (Deep=0 Core=1 REM=2 Awake=3 Unspecified=-1).
+    # A unit is REQUIRED: Home Assistant renders a unit-less numeric sensor as a
+    # banded state-timeline, not a line graph (frontend#11723). "stage" is a
+    # dimensionless label; no device_class so the raw code is stored verbatim.
+    "sleep_details": {
+        "native_unit_of_measurement": "stage",
+        "state_class": "measurement",
+        "suggested_display_precision": 0,
+        "icon": "mdi:chart-timeline-variant",
     },
     "respiratory_rate": {
         "native_unit_of_measurement": "breaths/min",
