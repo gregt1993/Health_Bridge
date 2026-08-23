@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import re
 from datetime import datetime, timezone
 import voluptuous as vol
@@ -10,7 +11,8 @@ import voluptuous as vol
 from aiohttp import web
 
 from homeassistant.const import CONF_TOKEN, Platform
-from homeassistant.components import webhook, persistent_notification
+from homeassistant.components import webhook, persistent_notification, frontend
+from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import device_registry as dr
@@ -35,6 +37,37 @@ CONFIG_SCHEMA = vol.Schema(
     extra=vol.ALLOW_EXTRA,
 )
 
+# Built-in Lovelace cards. Bump CARD_VERSION whenever the JS changes so the
+# `?v=` query busts the browser cache (same lesson as the promo-site deploy).
+CARD_VERSION = "0.4.8"
+_CARD_URL = "/health_bridge/health-bridge-cards.js"
+
+
+class HealthBridgeCardView(HomeAssistantView):
+    """Serve the built-in cards bundle with no-store caching.
+
+    Static paths let browsers heuristically cache the module, so during active
+    development a same-URL edit could be served stale (or mid-edit/broken),
+    showing "custom element doesn't exist". no-store forces a fresh fetch on
+    every page load, so edits always appear after a normal refresh.
+    """
+
+    requires_auth = False
+    url = _CARD_URL
+    name = "health_bridge:cards"
+
+    def __init__(self, file_path: str) -> None:
+        self._file_path = file_path
+
+    async def get(self, request):
+        return web.FileResponse(
+            self._file_path,
+            headers={
+                "Cache-Control": "no-store, max-age=0",
+                "Content-Type": "text/javascript",
+            },
+        )
+
 # --- Sleep helpers / config ---------------------------------------------------
 # Add near the top (module-level constant)
 _LAST_SYNC_MIN_INTERVAL_SECONDS = 10
@@ -55,6 +88,7 @@ _SLEEP_HOUR_KEYS = {
     "sleep_core_hours",   # Apple's “Core” ≈ light
     "sleep_deep_hours",
     "sleep_awake_hours",
+    "sleep_unspecified_hours",
 }
 
 # Metrics whose raw value arrives as a 0..1 fraction and must be scaled to a
@@ -241,6 +275,8 @@ _DISPLAY_NAME_OVERRIDES = {
     "sleep_core_hours": "Light Sleep Duration",
     "sleep_deep_hours": "Deep Sleep Duration",
     "sleep_awake_hours": "Sleep Awake Duration",
+    "sleep_unspecified_hours": "Unspecified Sleep Duration",
+    "sleep_details": "Sleep Details",
     "last_sync_time": "Last Sync Time",
     "uv_index": "UV Index",
     "time_in_daylight": "Time in Daylight",
@@ -253,6 +289,18 @@ _DISPLAY_NAME_OVERRIDES = {
 
 # --- Setup / teardown ---------------------------------------------------------
 
+async def _load_integration_version(hass: HomeAssistant) -> None:
+    """Cache the running integration version so the app can compare it against the
+    latest published on GitHub and prompt the user to update when behind."""
+    hass.data.setdefault(DOMAIN, {})
+    try:
+        from homeassistant.loader import async_get_integration
+        integration = await async_get_integration(hass, DOMAIN)
+        hass.data[DOMAIN]["integration_version"] = str(integration.version)
+    except Exception:  # noqa: BLE001 - version is best-effort, never block setup
+        hass.data[DOMAIN].setdefault("integration_version", None)
+
+
 async def async_setup(hass: HomeAssistant, config) -> bool:
     if DOMAIN not in config:
         return True
@@ -264,6 +312,7 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN]["token"] = token
     hass.data[DOMAIN].setdefault("entities", {})
+    await _load_integration_version(hass)
     _setup_webhook(hass)
     return True
 
@@ -274,12 +323,46 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN]["token"] = entry.data[CONF_TOKEN]
     hass.data[DOMAIN]["entry_id"] = entry.entry_id
     hass.data[DOMAIN].setdefault("entities", {})
+    await _load_integration_version(hass)
 
     # Ensure the sensor platform is loaded so add_sensor/update_sensor are available
     await hass.config_entries.async_forward_entry_setups(entry, [Platform.SENSOR])
 
     _setup_webhook(hass)
+    await _register_frontend(hass)
     return True
+
+
+async def _register_frontend(hass: HomeAssistant) -> None:
+    """Serve and auto-load the built-in Lovelace cards (no HACS resource needed).
+
+    Registration is process-lifetime (a static path + a global extra-JS URL), so
+    it's guarded to run once and is intentionally best-effort: the cards are a
+    convenience and must never block the integration from setting up.
+    """
+    data = hass.data.setdefault(DOMAIN, {})
+    if data.get("frontend_registered"):
+        return
+    try:
+        card_file = os.path.join(
+            os.path.dirname(__file__), "cards", "health-bridge-cards.js"
+        )
+        # no-store view (never cached) — edits always load on a normal refresh.
+        hass.http.register_view(HealthBridgeCardView(card_file))
+        # A version token is still handy for the log/URL; caching is off anyway.
+        try:
+            token = f"{CARD_VERSION}.{int(os.path.getmtime(card_file))}"
+        except OSError:
+            token = CARD_VERSION
+        frontend.add_extra_js_url(hass, f"{_CARD_URL}?v={token}")
+        data["frontend_registered"] = True
+        _LOGGER.info(
+            "Health Bridge: registered built-in dashboard cards v%s", CARD_VERSION
+        )
+    except Exception as exc:  # cards are non-critical; never block setup
+        _LOGGER.warning(
+            "Health Bridge: could not register dashboard cards: %s", exc, exc_info=True
+        )
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -395,6 +478,7 @@ def _setup_webhook(hass: HomeAssistant) -> None:
             return web.json_response(
                 {
                     "ok": True,
+                    "integration_version": hass.data.get(DOMAIN, {}).get("integration_version"),
                     "backfill_protocol": BACKFILL_PROTOCOL_VERSION,
                     "backfill_ack": "committed",
                     "statistics_policy": "history_only",
@@ -581,6 +665,7 @@ def _setup_webhook(hass: HomeAssistant) -> None:
             {
                 "ok": True,
                 "applied": True,
+                "integration_version": hass.data.get(DOMAIN, {}).get("integration_version"),
                 "request_type": "live",
                 "protocol_version": _LIVE_PROTOCOL_VERSION,
                 "request_id": request_id,
