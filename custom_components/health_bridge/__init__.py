@@ -325,20 +325,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN].setdefault("entities", {})
     await _load_integration_version(hass)
 
+    # Register the dashboard module before restoring the sensor platform. A
+    # large entity registry must not delay custom-element availability while
+    # browsers reconnect during Home Assistant startup.
+    await _register_frontend(hass)
+
     # Ensure the sensor platform is loaded so add_sensor/update_sensor are available
     await hass.config_entries.async_forward_entry_setups(entry, [Platform.SENSOR])
 
     _setup_webhook(hass)
-    await _register_frontend(hass)
     return True
 
 
 async def _register_frontend(hass: HomeAssistant) -> None:
     """Serve and auto-load the built-in Lovelace cards (no HACS resource needed).
 
-    Registration is process-lifetime (a static path + a global extra-JS URL), so
-    it's guarded to run once and is intentionally best-effort: the cards are a
-    convenience and must never block the integration from setting up.
+    The static route and extra-JS URL cover the current process. A persistent
+    Lovelace module resource is also maintained so reconnecting dashboards know
+    about the custom elements during their initial bootstrap after an HA restart.
+    Registration remains best-effort: cards must never block integration setup.
     """
     data = hass.data.setdefault(DOMAIN, {})
     if data.get("frontend_registered"):
@@ -354,7 +359,9 @@ async def _register_frontend(hass: HomeAssistant) -> None:
             token = f"{CARD_VERSION}.{int(os.path.getmtime(card_file))}"
         except OSError:
             token = CARD_VERSION
-        frontend.add_extra_js_url(hass, f"{_CARD_URL}?v={token}")
+        resource_url = f"{_CARD_URL}?v={token}"
+        frontend.add_extra_js_url(hass, resource_url)
+        await _upsert_lovelace_resource(hass, resource_url)
         data["frontend_registered"] = True
         _LOGGER.info(
             "Health Bridge: registered built-in dashboard cards v%s", CARD_VERSION
@@ -363,6 +370,59 @@ async def _register_frontend(hass: HomeAssistant) -> None:
         _LOGGER.warning(
             "Health Bridge: could not register dashboard cards: %s", exc, exc_info=True
         )
+
+
+async def _upsert_lovelace_resource(
+    hass: HomeAssistant, resource_url: str
+) -> None:
+    """Persist the cards module in Lovelace's resource collection.
+
+    `frontend.add_extra_js_url` is process-local and may be registered after an
+    already-connected browser has rebuilt its dashboard during an HA restart.
+    A storage-backed Lovelace resource is present in the next bootstrap payload,
+    which removes that race. YAML-mode dashboards keep the extra-JS fallback.
+    """
+    lovelace_data = hass.data.get("lovelace")
+    resources = getattr(lovelace_data, "resources", None)
+    if resources is None and isinstance(lovelace_data, dict):
+        resources = lovelace_data.get("resources")
+    if resources is None:
+        _LOGGER.debug(
+            "Health Bridge: Lovelace resources unavailable; using extra-JS fallback"
+        )
+        return
+
+    if not getattr(resources, "loaded", False):
+        await resources.async_load()
+
+    for item in resources.async_items():
+        existing_url = item.get("url", "")
+        if not existing_url.startswith(_CARD_URL):
+            continue
+        if existing_url != resource_url:
+            update_item = getattr(resources, "async_update_item", None)
+            if update_item is not None:
+                await update_item(
+                    item["id"],
+                    {"res_type": "module", "url": resource_url},
+                )
+                _LOGGER.info(
+                    "Health Bridge: updated persistent dashboard resource to %s",
+                    resource_url,
+                )
+        return
+
+    create_item = getattr(resources, "async_create_item", None)
+    if create_item is None:
+        _LOGGER.debug(
+            "Health Bridge: dashboard resources are not storage-backed; using extra-JS fallback"
+        )
+        return
+
+    await create_item({"res_type": "module", "url": resource_url})
+    _LOGGER.info(
+        "Health Bridge: added persistent dashboard resource %s", resource_url
+    )
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
