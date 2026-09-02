@@ -68,7 +68,7 @@ Once HACS is installed, add **Health Bridge** using the repository link below:
 4. Restart Home Assistant.  
    <img width="600" alt="image" src="https://github.com/user-attachments/assets/582cf776-f3d2-479c-9e28-c76317be4c65" />
 
-5. In the **Integrations** menu, click **Add Entry**, enter a secret token, and submit.
+5. In the **Integrations** menu, click **Add Entry**, select if you're setting up Health Assistant Link or Phone Assistant Link, enter a secret token, and submit.
 
 ---
 
