@@ -81,34 +81,27 @@ Once HACS is installed, add **Health Bridge** using the repository link below:
 ### iOS App Setup
 1. Open the **Health Assistant Link** app.  
    👉 [Download here](https://apps.apple.com/us/app/health-assistant-link/id6745420767) if not already installed.  
-   <img width="250" alt="IMG_5527" src="https://github.com/user-attachments/assets/fd5b5b1b-417d-41eb-ac07-3ccd97ddf812" />
+<img width="250" alt="Screenshot iPhone 17 Pro 02-09-2026 at 9 24 29 PM" src="https://github.com/user-attachments/assets/29aeddc6-b7a9-498a-8199-30998689d1e6" />
+
 
 2. Accept all required permissions.  
-   <img width="250" alt="IMG_5528" src="https://github.com/user-attachments/assets/b575de6a-e0b9-4c0b-82a7-47694aed3a10" />  
+   <img width="250" alt="Screenshot iPhone 17 Pro 02-09-2026 at 9 24 34 PM" src="https://github.com/user-attachments/assets/08d9d91b-ce51-4fa8-a650-953bccf4b163" />
    <img width="250" alt="IMG_5529" src="https://github.com/user-attachments/assets/14880e0a-cb44-4850-8f76-bfa2f7e68a28" />
 
-3. Select the health data you want to sync (more can be added later). 
-   <img width="250" alt="IMG_5530" src="https://github.com/user-attachments/assets/bac73a50-8c55-4359-8599-2fd00d069313" />
+3. Enter your **Home Assistant external URL**, your name, and the secret token you created earlier.   
+   <img width="250" alt="Screenshot iPhone 17 Pro 02-09-2026 at 9 25 03 PM" src="https://github.com/user-attachments/assets/99495bfb-1ec9-4c30-a44b-eb5a9644d409" />
 
-4. Enter your **Home Assistant external URL**, your name, and the secret token you created earlier.   
-   <img width="250" alt="IMG_5532" src="https://github.com/user-attachments/assets/bf032b47-1387-4878-9a09-83c24422bc7c" />
 
-5. Test the connection to confirm the URL is correct.  
-   <img width="250" alt="IMG_5531" src="https://github.com/user-attachments/assets/7eec01ec-9a52-4b5f-b576-04a6a5856587" />
-   <img width="250" alt="IMG_5533" src="https://github.com/user-attachments/assets/d2c382d0-418b-45fa-9b6c-1a5c9bec24b4" />
+4. Test the connection to confirm the URL is correct.
+   
+   <img width="250" alt="Screenshot iPhone 17 Pro 02-09-2026 at 9 25 08 PM" src="https://github.com/user-attachments/assets/e3aa1b17-c40b-4b96-99a4-0f8a544fd060" />
 
 6. **(Optional) Upgrade for automated syncing.** The app is free to use with manual syncing. If you’d like your data to sync automatically in the background, subscribe to the optional automated syncing upgrade.  
+   <img width="250" alt="Screenshot iPhone 17 Pro 02-09-2026 at 9 25 18 PM" src="https://github.com/user-attachments/assets/0e961ba1-320b-498d-950e-a49057268870" />
    
-   <img width="250" alt="IMG_5534" src="https://github.com/user-attachments/assets/371623e6-6b7b-4a07-bb68-c3b9f7f38149" />
-
-7. **(If you subscribed)** Restart to register the subscription with the app (close the app out of multi-tasking, then re-open).  
+7. Tap **Sync Now** to start syncing. Leaving the app open in the background improves reliability.    
    
-   <img width="250" alt="IMG_5535" src="https://github.com/user-attachments/assets/2aff6498-a6db-4c79-81af-a276ae195396" />
-
-8. Tap **Sync Now** to start syncing. Leaving the app open in the background improves reliability.    
-   
-   <img width="250" alt="IMG_5538" src="https://github.com/user-attachments/assets/e5feef16-4148-41d4-8985-3367581cfb5e" />
-
+   <img width="250" alt="Screenshot iPhone 17 Pro 02-09-2026 at 9 27 27 PM" src="https://github.com/user-attachments/assets/b1d6c500-9de5-4a70-a5a8-541c9ea94c03" />
 
 
 
