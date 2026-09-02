@@ -2,6 +2,7 @@
 
 <p align="center">
   <img src="https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/8c/0a/b3/8c0ab330-3e85-27b2-8532-e1f912c29fb6/AppIcon-0-0-1x_U007ephone-0-1-85-220.png/460x0w.webp" alt="Health Assistant Link Icon" width="120"/>
+  <img src="https://is1-ssl.mzstatic.com/image/thumb/PurpleSource221/v4/77/b8/20/77b82043-ced8-8c60-fc24-a92c09aa53a6/Placeholder.mill/1024x1024bb.png" alt="Phone Assistant Link Icon" width="120"/>
 </p>
 
 <p align="center">
