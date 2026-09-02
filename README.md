@@ -13,9 +13,14 @@
   📚 <a href="https://healthassistantlink.com/stories">User Stories</a>
 </p>
 
-**Health Bridge** is a custom integration for [Home Assistant](https://www.home-assistant.io/) that connects with the iOS app **[Health Assistant Link](https://apps.apple.com/us/app/health-assistant-link/id6745420767)** to bring your Apple Health data into your smart home.
+> [!TIP]
+> ### 🆕 Meet **Phone Assistant Link** — Screen Time and app blocking, now in Home Assistant
+> A brand-new companion app that brings **Apple Screen Time** into your smart home. Block apps and app groups, set daily usage limits, and apply temporary allow/block overrides — all from Home Assistant, with usage and "blocked opens" surfaced as sensors.
+>
+> ✨ Uses the **same Health Bridge integration** — just pick **Phone Assistant Link** during setup.
+> 📱 _App Store — coming soon._
 
-Learn more and see setup guides at **[healthassistantlink.com](https://healthassistantlink.com)**.
+**Health Bridge** is a custom integration for [Home Assistant](https://www.home-assistant.io/) that connects with the companion iOS apps **[Health Assistant Link](https://apps.apple.com/us/app/health-assistant-link/id6745420767)** (Apple Health → Home Assistant) and the new **Phone Assistant Link** (Apple Screen Time → Home Assistant) to bring your iPhone data into your smart home.
 
 > 🆓 **Free to use.** Health Assistant Link is free to download and use to sync your Apple Health data into Home Assistant. An optional paid upgrade unlocks **automated syncing**, so your data keeps updating in the background without manual taps.
 
@@ -106,6 +111,25 @@ Once HACS is installed, add **Health Bridge** using the repository link below:
 
 
 
+
+---
+
+## 📱 Phone Assistant Link (Screen Time)
+
+**Phone Assistant Link** is a separate companion app that uses the **same Health Bridge integration** to bring **Apple Screen Time** controls into Home Assistant. Instead of health data, it exposes app-restriction and usage entities you can automate.
+
+**What you can do from Home Assistant:**
+- 🔒 **Block apps & app groups** — flip a switch to shield selected apps.
+- ⏳ **Daily usage limits** — set a per-group allowance; the app auto-blocks when it's reached.
+- ⏱️ **Temporary overrides** — apply a timed allow/block that expires on its own.
+- 📊 **Usage sensors** — approximate, privacy-preserving screen-time minutes per app/group.
+- 🚫 **Blocked-opens sensors** — an approximate daily count of how often a blocked app was opened (resets daily).
+
+**Setup:** identical to the steps above — install Health Bridge via HACS, add an entry and choose **Phone Assistant Link** in step 5, then enter your Home Assistant URL and secret token in the app.
+
+> ℹ️ **Privacy note:** Screen Time metrics are approximate by design. Apple's on-device APIs keep app identities private and don't expose exact open counts, so usage minutes and blocked-opens are best read as trends rather than precise figures.
+
+📱 _Phone Assistant Link — App Store coming soon._
 
 ---
 
