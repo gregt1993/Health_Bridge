@@ -1,6 +1,6 @@
 {
   "domain": "health_bridge",
-  "name": "Assistant Bridge",
+  "name": "Health Bridge",
   "config_flow": true,
   "documentation": "https://github.com/gregt1993/Health_Bridge",
   "issue_tracker": "https://github.com/gregt1993/Health_Bridge/issues",
@@ -8,5 +8,5 @@
   "dependencies": ["frontend", "http", "lovelace", "webhook"],
   "requirements": [],
   "iot_class": "cloud_push",
-  "version": "1.2.1"
+  "version": "2.0.0"
 }
