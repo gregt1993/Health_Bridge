@@ -15,7 +15,7 @@
 
 > [!TIP]
 > ### 🆕 Meet **Phone Assistant Link** — Screen Time and App Blocking, now in Home Assistant
-> A brand-new companion app that brings **Apple Screen Time** into your smart home. Block apps and app groups, set daily usage limits, and apply temporary allow/block overrides — all from Home Assistant, with usage and "blocked opens" surfaced as sensors.
+> A brand-new companion app that brings **Apple Screen Time** into your smart home. Block apps and app groups, set daily usage limits, and apply temporary allow/block overrides — all from Home Assistant, with usage and more surfaced as sensors.
 >
 > ✨ Uses the **same Health Bridge integration** — just pick **Phone Assistant Link** during setup.
 > 📱 _App Store — [Download Now](https://apps.apple.com/nz/app/phone-assistant-link/id6806541422)._
