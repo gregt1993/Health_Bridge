@@ -9,6 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DOMAIN
 from .phone_assistant import PALGroupPolicyState, get_or_create_policy, parse_pal_unique_id
@@ -64,7 +65,7 @@ async def async_setup_entry(
         async_add_entities(restored)
 
 
-class PALLimitReachedBinarySensor(BinarySensorEntity):
+class PALLimitReachedBinarySensor(BinarySensorEntity, RestoreEntity):
     _attr_has_entity_name = True
     _attr_name = "Limit Reached"
     _attr_icon = "mdi:timer-alert"
@@ -74,14 +75,22 @@ class PALLimitReachedBinarySensor(BinarySensorEntity):
         self._attr_icon = policy.icon
         self._attr_unique_id = f"{UNIQUE_PREFIX}{policy.user_id}_{policy.group_id}"
         self._attr_device_info = pal_device_info(policy)
+        # Last displayed value, shown after a restart until the switch restore or
+        # a phone sync re-hydrates the shared policy.
+        self._restored_is_on: bool | None = None
 
     @property
     def is_on(self) -> bool:
+        if not self.policy.control_hydrated and self._restored_is_on is not None:
+            return self._restored_is_on
         return self.policy.limit_reached
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         self.policy.add_listener(self._handle_policy_update)
+        last = await self.async_get_last_state()
+        if last is not None and last.state in ("on", "off"):
+            self._restored_is_on = last.state == "on"
 
     async def async_will_remove_from_hass(self) -> None:
         self.policy.remove_listener(self._handle_policy_update)

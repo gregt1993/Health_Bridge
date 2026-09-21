@@ -11,6 +11,7 @@ from homeassistant.const import (
     UnitOfTemperature,
     UnitOfPressure,
     UnitOfSpeed,
+    UnitOfPower,
     UnitOfVolume,
     PERCENTAGE,
 )
@@ -93,6 +94,129 @@ METRIC_ATTRIBUTES_MAP = {
         "native_unit_of_measurement": UnitOfLength.METERS,
         "state_class": "total_increasing",
         "icon": "mdi:bike",
+    },
+    # Apple Watch workout metrics (running dynamics + cycling sensors).
+    # Latest-sample measurements recorded during workouts.
+    "running_power": {
+        "device_class": "power",
+        "native_unit_of_measurement": UnitOfPower.WATT,
+        "state_class": "measurement",
+        "suggested_display_precision": 0,
+        "icon": "mdi:run-fast",
+    },
+    "running_stride_length": {
+        "device_class": "distance",
+        "native_unit_of_measurement": UnitOfLength.METERS,
+        "state_class": "measurement",
+        "suggested_display_precision": 2,
+        "icon": "mdi:ruler",
+    },
+    "running_ground_contact_time": {
+        "native_unit_of_measurement": "ms",
+        "state_class": "measurement",
+        "suggested_display_precision": 0,
+        "icon": "mdi:timer-outline",
+    },
+    "running_vertical_oscillation": {
+        "native_unit_of_measurement": UnitOfLength.CENTIMETERS,
+        "state_class": "measurement",
+        "suggested_display_precision": 1,
+        "icon": "mdi:arrow-up-down",
+    },
+    "cycling_power": {
+        "device_class": "power",
+        "native_unit_of_measurement": UnitOfPower.WATT,
+        "state_class": "measurement",
+        "suggested_display_precision": 0,
+        "icon": "mdi:lightning-bolt",
+    },
+    "cycling_cadence": {
+        "native_unit_of_measurement": "rpm",
+        "state_class": "measurement",
+        "suggested_display_precision": 0,
+        "icon": "mdi:bike",
+    },
+    "cycling_speed": {
+        "device_class": "speed",
+        "native_unit_of_measurement": UnitOfSpeed.METERS_PER_SECOND,
+        "state_class": "measurement",
+        "suggested_display_precision": 2,
+        "icon": "mdi:speedometer",
+    },
+    "running_speed": {
+        "device_class": "speed",
+        "native_unit_of_measurement": UnitOfSpeed.METERS_PER_SECOND,
+        "state_class": "measurement",
+        "suggested_display_precision": 2,
+        "icon": "mdi:run-fast",
+    },
+    "cycling_functional_threshold_power": {
+        "device_class": "power",
+        "native_unit_of_measurement": UnitOfPower.WATT,
+        "state_class": "measurement",
+        "suggested_display_precision": 0,
+        "icon": "mdi:bike-fast",
+    },
+    "swimming_stroke_count": {
+        "native_unit_of_measurement": "strokes",
+        "state_class": "total_increasing",
+        "suggested_display_precision": 0,
+        "icon": "mdi:swim",
+    },
+    "underwater_depth": {
+        "device_class": "distance",
+        "native_unit_of_measurement": UnitOfLength.METERS,
+        "state_class": "measurement",
+        "suggested_display_precision": 1,
+        "icon": "mdi:diving-scuba",
+    },
+    "water_temperature": {
+        "device_class": "temperature",
+        "native_unit_of_measurement": UnitOfTemperature.CELSIUS,
+        "state_class": "measurement",
+        "suggested_display_precision": 1,
+        "icon": "mdi:coolant-temperature",
+    },
+    # iOS 18+ workout metrics.
+    "workout_effort_score": {
+        "state_class": "measurement",
+        "suggested_display_precision": 1,
+        "icon": "mdi:gauge",
+    },
+    "estimated_workout_effort_score": {
+        "state_class": "measurement",
+        "suggested_display_precision": 1,
+        "icon": "mdi:gauge",
+    },
+    "distance_rowing": {
+        "device_class": "distance",
+        "native_unit_of_measurement": UnitOfLength.METERS,
+        "state_class": "total_increasing",
+        "icon": "mdi:rowing",
+    },
+    "distance_paddle_sports": {
+        "device_class": "distance",
+        "native_unit_of_measurement": UnitOfLength.METERS,
+        "state_class": "total_increasing",
+        "icon": "mdi:kayaking",
+    },
+    "distance_cross_country_skiing": {
+        "device_class": "distance",
+        "native_unit_of_measurement": UnitOfLength.METERS,
+        "state_class": "total_increasing",
+        "icon": "mdi:ski-cross-country",
+    },
+    "distance_downhill_snow_sports": {
+        "device_class": "distance",
+        "native_unit_of_measurement": UnitOfLength.METERS,
+        "state_class": "total_increasing",
+        "icon": "mdi:ski",
+    },
+    "distance_skating_sports": {
+        "device_class": "distance",
+        "native_unit_of_measurement": UnitOfLength.METERS,
+        "state_class": "total_increasing",
+        "icon": "mdi:skate",
     },
     "wrist_temperature": {
         "device_class": "temperature",
@@ -234,7 +358,9 @@ METRIC_ATTRIBUTES_MAP = {
         "suggested_display_precision": 2,
     },
     "net_calories": {
-        "device_class": "energy",
+        # No device_class: net calories fluctuates and can be negative, so it is a
+        # "measurement" value. HA forbids state_class "measurement" with device_class
+        # "energy" (which expects total/total_increasing), so leave device_class unset.
         "native_unit_of_measurement": UnitOfEnergy.KILO_CALORIE,
         "state_class": "measurement",
         "icon": "mdi:scale-balance",

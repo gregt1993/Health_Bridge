@@ -130,6 +130,12 @@ class PALBlockedSwitch(SwitchEntity, RestoreEntity):
             until = dt_util.parse_datetime(raw_until) if isinstance(raw_until, str) else None
             if override in {"allow", "block"} and until is not None:
                 self.policy.set_temporary(override, dt_util.as_utc(until))
+            # The switch owns the restored control state (blocked, limit reached,
+            # daily limit, temporary override). Mark the shared policy hydrated and
+            # notify so the derived read-only entities render the restored values
+            # regardless of platform setup order.
+            self.policy.control_hydrated = True
+            self.policy.notify()
 
     async def async_will_remove_from_hass(self) -> None:
         self.policy.remove_listener(self._handle_policy_update)

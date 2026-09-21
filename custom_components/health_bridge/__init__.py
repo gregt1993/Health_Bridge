@@ -19,6 +19,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.storage import Store
 from homeassistant.config_entries import ConfigEntry
 
 from .const import DOMAIN, METRIC_ATTRIBUTES_MAP
@@ -28,9 +29,29 @@ from .history_backfill import (
     BackfillEntityNotReadyError,
     BackfillUnavailableError,
     BackfillValidationError,
+    TextBackfillPoint,
     async_commit_backfill,
     validate_backfill_series,
 )
+
+# Metrics whose history is a state STRING plus per-row attributes rather than a
+# numeric series: the sleep clock-boundaries (state = a timestamp) and workouts
+# (state = a composite summary). These ride the same atomic backfill commit but
+# are built as text points with their own attributes per row.
+_TEXT_BACKFILL_METRICS = frozenset({"asleep_time", "wake_time", "last_apple_workout"})
+
+# One logbook entry is fired the first time HA sees a workout's `workout_id`, so
+# each workout appears as its own entry in the native Logbook/Activity view even
+# when several were logged before a single sync. Workouts pulled in by the 14-day
+# history backfill are recorded as "seen" but NOT logged unless they finished
+# within this window — otherwise a first backfill would dump a fortnight of
+# entries all stamped "now" (a fired event cannot be back-dated). The seen-id set
+# is persisted and capped so re-syncs never double-log.
+_WORKOUT_LOGBOOK_EVENT = "logbook_entry"
+_WORKOUT_LOGBOOK_MAX_AGE_SECONDS = 24 * 3600
+_WORKOUT_LOGGED_STORE_KEY = "health_bridge_logged_workouts"
+_WORKOUT_LOGGED_STORE_VERSION = 1
+_WORKOUT_LOGGED_MAX_IDS = 500
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -248,6 +269,91 @@ def _parse_epoch(value):
     return None
 
 
+async def _async_get_logged_workout_ids(hass: HomeAssistant) -> tuple[Store, list[str]]:
+    """Load (once, then cache) the persisted set of already-logged workout ids."""
+    data = hass.data.setdefault(DOMAIN, {})
+    store = data.get("logged_workout_store")
+    if store is None:
+        store = Store(hass, _WORKOUT_LOGGED_STORE_VERSION, _WORKOUT_LOGGED_STORE_KEY)
+        loaded = await store.async_load() or {}
+        ids = [str(i) for i in loaded.get("ids", []) if isinstance(i, (str, int))]
+        data["logged_workout_store"] = store
+        data["logged_workout_ids"] = ids
+    return store, data["logged_workout_ids"]
+
+
+def _fire_workout_logbook_entry(
+    hass: HomeAssistant, entity_id: str, datapoint: dict
+) -> None:
+    """Fire one native logbook entry for a single workout."""
+    workout_type = datapoint.get("workout_type") or "Workout"
+    summary = datapoint.get("summary")
+    message = f"completed — {summary}" if summary else "completed"
+    hass.bus.async_fire(
+        _WORKOUT_LOGBOOK_EVENT,
+        {
+            "name": str(workout_type),
+            "message": str(message),
+            "entity_id": entity_id,
+            "domain": DOMAIN,
+        },
+    )
+
+
+async def _async_log_new_workouts(
+    hass: HomeAssistant, entity_id: str, datapoints: list
+) -> None:
+    """Fire a logbook entry for each not-yet-seen workout in ``datapoints``.
+
+    Best-effort: any failure here must never break a live or backfill sync.
+    Dedupes by ``workout_id`` against a persisted set, and only logs workouts
+    that finished within :data:`_WORKOUT_LOGBOOK_MAX_AGE_SECONDS` so an initial
+    history backfill records old workouts as seen without spamming the logbook.
+    """
+    if not datapoints:
+        return
+    try:
+        store, ids = await _async_get_logged_workout_ids(hass)
+    except Exception:  # pragma: no cover - storage is best-effort
+        _LOGGER.debug("Health Bridge: could not load logged-workout store", exc_info=True)
+        return
+
+    now = time.time()
+    seen = set(ids)
+    changed = False
+    for datapoint in datapoints:
+        if not isinstance(datapoint, dict):
+            continue
+        workout_id = datapoint.get("workout_id")
+        if not workout_id:
+            continue
+        workout_id = str(workout_id)
+        if workout_id in seen:
+            continue
+        seen.add(workout_id)
+        ids.append(workout_id)
+        changed = True
+
+        end_ts = _parse_epoch(datapoint.get("end_time") or datapoint.get("last_synced"))
+        if end_ts is None or (now - end_ts) > _WORKOUT_LOGBOOK_MAX_AGE_SECONDS:
+            continue  # remembered as seen, but too old to log honestly
+        try:
+            _fire_workout_logbook_entry(hass, entity_id, datapoint)
+        except Exception:  # pragma: no cover - logbook is best-effort
+            _LOGGER.debug(
+                "Health Bridge: failed to fire workout logbook entry", exc_info=True
+            )
+
+    if not changed:
+        return
+    if len(ids) > _WORKOUT_LOGGED_MAX_IDS:
+        del ids[: len(ids) - _WORKOUT_LOGGED_MAX_IDS]
+    try:
+        await store.async_save({"ids": ids})
+    except Exception:  # pragma: no cover - storage is best-effort
+        _LOGGER.debug("Health Bridge: could not persist logged-workout store", exc_info=True)
+
+
 def _backfill_error(message: str, status: int, code: str) -> web.Response:
     """Return a stable, machine-readable backfill failure response."""
     return web.json_response(
@@ -298,22 +404,32 @@ def _prepare_backfill_batch(hass: HomeAssistant, data: dict, user_id: str):
         raise BackfillValidationError("backfill data must be a non-empty object")
 
     series_by_entity: dict[str, list[tuple[float, float]]] = {}
+    text_series_by_entity: dict[str, list[TextBackfillPoint]] = {}
     for metric_name, datapoints in health_data.items():
-        attrs = METRIC_ATTRIBUTES_MAP.get(metric_name)
-        if not attrs or not attrs.get("state_class"):
-            raise BackfillValidationError(
-                f"metric '{metric_name}' is not eligible for numeric history backfill"
-            )
         if not isinstance(datapoints, list):
             raise BackfillValidationError(
                 f"metric '{metric_name}' must contain an array of datapoints"
             )
+
+        is_text = metric_name in _TEXT_BACKFILL_METRICS
+        if not is_text:
+            attrs = METRIC_ATTRIBUTES_MAP.get(metric_name)
+            if not attrs or not attrs.get("state_class"):
+                raise BackfillValidationError(
+                    f"metric '{metric_name}' is not eligible for numeric history backfill"
+                )
 
         entity_id = _resolve_backfill_entity_id(hass, user_id, metric_name)
         if entity_id is None:
             raise BackfillEntityNotReadyError(
                 f"metric '{metric_name}' does not have a live sensor yet"
             )
+
+        if is_text:
+            text_series_by_entity[entity_id] = _build_text_backfill_points(
+                metric_name, datapoints
+            )
+            continue
 
         points: list[tuple[float, float]] = []
         for datapoint in datapoints:
@@ -342,7 +458,80 @@ def _prepare_backfill_batch(hass: HomeAssistant, data: dict, user_id: str):
 
         series_by_entity[entity_id] = points
 
-    return validate_backfill_series(data.get("request_id"), series_by_entity)
+    return validate_backfill_series(
+        data.get("request_id"),
+        series_by_entity,
+        text_series_by_entity=text_series_by_entity,
+    )
+
+
+def _coerce_iso_utc(value) -> str | None:
+    """Normalize an ISO string or epoch number to a UTC ISO-8601 string."""
+    epoch = _parse_epoch(value)
+    if epoch is None:
+        return None
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+
+
+def _build_text_backfill_points(
+    metric_name: str, datapoints: list
+) -> list[TextBackfillPoint]:
+    """Build back-dated text points (state + per-row attributes) for a metric.
+
+    Workouts reuse the same composite state and full attribute payload as the
+    live path; the sleep clock-boundaries reuse the live sensor's timestamp state
+    and its ``seconds_since_midnight``/``formatted_time`` attributes so history
+    rows are indistinguishable from ones written live.
+    """
+    # Imported here to avoid a module-load import cycle with the sensor platform.
+    from .sensor import _format_seconds_since_midnight, _format_iso_to_local_clock
+
+    points: list[TextBackfillPoint] = []
+    for datapoint in datapoints:
+        if not isinstance(datapoint, dict):
+            raise BackfillValidationError(
+                f"metric '{metric_name}' contains a malformed datapoint"
+            )
+
+        if metric_name == "last_apple_workout":
+            timestamp = _parse_epoch(
+                datapoint.get("end_time")
+                or datapoint.get("timestamp")
+                or datapoint.get("last_synced")
+            )
+            if timestamp is None:
+                raise BackfillValidationError(
+                    f"metric '{metric_name}' contains an invalid timestamp"
+                )
+            state = _compose_workout_state(datapoint)
+            if not state:
+                raise BackfillValidationError(
+                    f"metric '{metric_name}' datapoint is missing a workout type"
+                )
+            attributes = {k: v for k, v in datapoint.items() if k != "timestamp"}
+        else:  # asleep_time / wake_time
+            timestamp = _parse_epoch(datapoint.get("timestamp"))
+            if timestamp is None:
+                raise BackfillValidationError(
+                    f"metric '{metric_name}' contains an invalid timestamp"
+                )
+            state = _coerce_iso_utc(
+                datapoint.get("boundary") or datapoint.get("timestamp")
+            )
+            if state is None:
+                raise BackfillValidationError(
+                    f"metric '{metric_name}' contains an invalid boundary time"
+                )
+            attributes = {"recorded_at": state}
+            seconds = datapoint.get("value")
+            if seconds is not None:
+                attributes["seconds_since_midnight"] = seconds
+                attributes["formatted_time"] = _format_seconds_since_midnight(seconds)
+                attributes["recorded_local_time"] = _format_iso_to_local_clock(state)
+
+        points.append(TextBackfillPoint(timestamp, state, attributes))
+
+    return points
 
 
 async def _handle_backfill_webhook(
@@ -368,6 +557,15 @@ async def _handle_backfill_webhook(
         return _backfill_error(
             "recorder commit failed", 500, "backfill_commit_failed"
         )
+
+    # After the history rows are committed, log any workout the app just taught us
+    # about that we haven't logged before (recency-guarded inside the helper so an
+    # old-history fill doesn't spam the logbook).
+    workout_points = (data.get("data") or {}).get("last_apple_workout")
+    if isinstance(workout_points, list) and workout_points:
+        entity_id = _resolve_backfill_entity_id(hass, user_id, "last_apple_workout")
+        if entity_id:
+            await _async_log_new_workouts(hass, entity_id, workout_points)
 
     return web.json_response(result.as_dict())
 
@@ -859,16 +1057,20 @@ def _setup_webhook(hass: HomeAssistant) -> None:
         elif medications is not None:
             skipped_entities += 1
 
+        workout_datapoints: list | None = None
         for metric_name, datapoints in health_data.items():
             if not datapoints:
                 skipped_entities += 1
                 continue
 
-            # Workouts arrive as a single dict. The state is a human-readable
-            # composite (type + breakdown); every field is also kept as an
-            # attribute so automations/cards read clean values, not the string.
+            # Workouts arrive as an array sorted oldest→newest. The last one sets
+            # the sensor's current state (a human-readable composite); every field
+            # is kept as an attribute so automations/cards read clean values. The
+            # whole array is logged (one logbook entry per new workout) after the
+            # loop, so two workouts synced together each get their own entry.
             workout_attrs = None
             if metric_name == "last_apple_workout":
+                workout_datapoints = list(datapoints)
                 payload = datapoints[-1] or {}
                 latest_value = _compose_workout_state(payload)
                 latest_timestamp = payload.get("last_synced") or payload.get("end_time")
@@ -932,6 +1134,11 @@ def _setup_webhook(hass: HomeAssistant) -> None:
                     applied_entities += 1
                 else:
                     skipped_entities += 1
+
+        # Fire one native logbook entry per new workout the live sync delivered.
+        if workout_datapoints:
+            entity_id = f"sensor.last_apple_workout_{user_id}"
+            await _async_log_new_workouts(hass, entity_id, workout_datapoints)
 
         if applied_entities == 0:
             _LOGGER.warning(

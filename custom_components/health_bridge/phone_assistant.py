@@ -233,6 +233,12 @@ class PALGroupPolicyState:
         self.group_id = group_id
         self.name = name
         self.icon = icon
+        # True once this policy has real data again after a restart — either a
+        # switch/number/binary_sensor restored its last state into it, or a phone
+        # sync populated it. Derived read-only entities (restriction status,
+        # limit reached) show their own restored fallback until this flips, so a
+        # Home Assistant restart never blanks them back to defaults.
+        self.control_hydrated = False
         self.blocked = False
         self.daily_limit_minutes: int | None = None
         self.limit_reached = False
@@ -732,6 +738,7 @@ async def async_handle_phone_assistant_request(
             policy.blocked = group["blocked"]
             policy.daily_limit_minutes = group["daily_limit_minutes"]
             policy.extensions_allowed_per_day = group["extensions_allowed_per_day"]
+        policy.control_hydrated = True
         policy.notify()
         for ensure in ensure_callbacks:
             ensure(policy)

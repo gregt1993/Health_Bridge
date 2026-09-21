@@ -19,6 +19,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.typing import StateType
 from homeassistant.util import slugify
 
@@ -444,7 +445,7 @@ def _setup_pal_status_sensors(
         async_add_entities(restored)
 
 
-class PALRestrictionStatusSensor(SensorEntity):
+class PALRestrictionStatusSensor(SensorEntity, RestoreEntity):
     _attr_has_entity_name = True
     _attr_name = "Restriction Status"
     _attr_icon = "mdi:shield-lock-outline"
@@ -456,9 +457,14 @@ class PALRestrictionStatusSensor(SensorEntity):
             f"{_PAL_STATUS_PREFIX}{policy.user_id}_{policy.group_id}"
         )
         self._attr_device_info = pal_device_info(policy)
+        # Last displayed status, shown after a restart until the switch restore
+        # or a phone sync re-hydrates the shared policy.
+        self._restored_status: str | None = None
 
     @property
     def native_value(self) -> str:
+        if not self.policy.control_hydrated and self._restored_status is not None:
+            return self._restored_status
         return self.policy.restriction_status
 
     @property
@@ -475,6 +481,9 @@ class PALRestrictionStatusSensor(SensorEntity):
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         self.policy.add_listener(self._handle_policy_update)
+        last = await self.async_get_last_state()
+        if last is not None and last.state not in (None, "unknown", "unavailable"):
+            self._restored_status = last.state
 
     async def async_will_remove_from_hass(self) -> None:
         self.policy.remove_listener(self._handle_policy_update)
@@ -537,7 +546,7 @@ def _setup_pal_usage_sensors(
         async_add_entities(restored)
 
 
-class PALUsageTodaySensor(SensorEntity):
+class PALUsageTodaySensor(RestoreSensor):
     _attr_has_entity_name = True
     _attr_name = "Used Today"
     _attr_icon = "mdi:timer-outline"
@@ -564,6 +573,17 @@ class PALUsageTodaySensor(SensorEntity):
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         self.policy.add_listener(self._handle_policy_update)
+        # Rehydrate the last known usage after a Home Assistant restart so the
+        # sensor keeps its value instead of dropping to 0 until the phone next
+        # syncs. Only restore when no fresh webhook has already populated the
+        # shared policy (a non-zero value means a sync beat us here).
+        if self.policy.usage_today_minutes == 0:
+            last = await self.async_get_last_sensor_data()
+            if last is not None and last.native_value is not None:
+                try:
+                    self.policy.usage_today_minutes = max(0, int(last.native_value))
+                except (TypeError, ValueError):
+                    pass
 
     async def async_will_remove_from_hass(self) -> None:
         self.policy.remove_listener(self._handle_policy_update)
@@ -626,7 +646,7 @@ def _setup_pal_extensions_used_sensors(
         async_add_entities(restored)
 
 
-class PALExtensionsUsedTodaySensor(SensorEntity):
+class PALExtensionsUsedTodaySensor(RestoreSensor):
     _attr_has_entity_name = True
     _attr_name = "Extensions Used Today"
     _attr_icon = "mdi:timer-plus-outline"
@@ -655,6 +675,14 @@ class PALExtensionsUsedTodaySensor(SensorEntity):
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         self.policy.add_listener(self._handle_policy_update)
+        # Rehydrate extensions used today across a restart (see PALUsageTodaySensor).
+        if self.policy.extensions_used_today == 0:
+            last = await self.async_get_last_sensor_data()
+            if last is not None and last.native_value is not None:
+                try:
+                    self.policy.extensions_used_today = max(0, int(last.native_value))
+                except (TypeError, ValueError):
+                    pass
 
     async def async_will_remove_from_hass(self) -> None:
         self.policy.remove_listener(self._handle_policy_update)
@@ -755,7 +783,7 @@ def _migrate_pal_screen_time_entity_name(
         registry.async_update_entity(current_entity_id, new_entity_id=desired_entity_id)
 
 
-class PALScreenTimeSensor(SensorEntity):
+class PALScreenTimeSensor(RestoreSensor):
     _attr_has_entity_name = True
     _attr_icon = "mdi:timer-outline"
     _attr_device_class = SensorDeviceClass.DURATION
@@ -793,6 +821,16 @@ class PALScreenTimeSensor(SensorEntity):
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         self.screen_time_state.add_listener(self._handle_update)
+        # Rehydrate screen-time minutes across a restart (see PALUsageTodaySensor).
+        if self.screen_time_state.usage_today_minutes == 0:
+            last = await self.async_get_last_sensor_data()
+            if last is not None and last.native_value is not None:
+                try:
+                    self.screen_time_state.usage_today_minutes = max(
+                        0, int(last.native_value)
+                    )
+                except (TypeError, ValueError):
+                    pass
 
     async def async_will_remove_from_hass(self) -> None:
         self.screen_time_state.remove_listener(self._handle_update)

@@ -14,7 +14,8 @@ sample second.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import json
 import logging
 import math
 import re
@@ -29,6 +30,12 @@ MAX_CLOCK_SKEW_SECONDS = 5 * 60
 MAX_REQUEST_AGE_GRACE_SECONDS = 15 * 60
 MAX_POINTS_PER_REQUEST = 2_500
 MAX_POINTS_PER_ENTITY = 721
+# Home Assistant stores at most 255 characters of state; longer text is refused
+# rather than silently truncated into a misleading history row.
+MAX_STATE_LENGTH = 255
+# Per-row attributes are serialized to JSON; cap the payload so a malformed or
+# hostile request can't insert oversized StateAttributes rows.
+MAX_ATTRIBUTES_JSON_LENGTH = 16_384
 MAX_RECORDER_BACKLOG = 1_000
 RECORDER_TASK_TIMEOUT_SECONDS = 45
 
@@ -61,6 +68,21 @@ class BackfillEntityNotReadyError(BackfillError):
 
 
 @dataclass(frozen=True, slots=True)
+class TextBackfillPoint:
+    """A single back-dated text state with its own attributes.
+
+    Unlike numeric metrics (whose state is a rendered number and whose attributes
+    are static unit/device-class metadata), text metrics such as workouts or the
+    sleep clock-boundaries carry a human-meaningful state string AND per-row
+    attributes, so every historical row must be able to keep its own values.
+    """
+
+    timestamp: float
+    state: str
+    attributes: dict[str, Any] | None
+
+
+@dataclass(frozen=True, slots=True)
 class ValidatedBackfillBatch:
     """Normalized series ready for one atomic recorder transaction."""
 
@@ -68,6 +90,10 @@ class ValidatedBackfillBatch:
     series_by_entity: dict[str, list[tuple[float, float]]]
     received_points: int
     duplicate_points: int
+    # Text metrics are committed in the same transaction as the numeric series.
+    text_series_by_entity: dict[str, list[TextBackfillPoint]] = field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,10 +139,14 @@ def validate_backfill_series(
     series_by_entity: dict[str, list[tuple[float, float]]],
     *,
     now_timestamp: float | None = None,
+    text_series_by_entity: dict[str, list[TextBackfillPoint]] | None = None,
 ) -> ValidatedBackfillBatch:
     """Validate limits/timestamps and deduplicate points within the request."""
     validated_request_id = validate_request_id(request_id)
-    if not isinstance(series_by_entity, dict) or not series_by_entity:
+    if not isinstance(series_by_entity, dict):
+        raise BackfillValidationError("backfill data contains no eligible metrics")
+    text_series_by_entity = text_series_by_entity or {}
+    if not series_by_entity and not text_series_by_entity:
         raise BackfillValidationError("backfill data contains no eligible metrics")
 
     now_ts = float(now_timestamp if now_timestamp is not None else time.time())
@@ -167,6 +197,60 @@ def validate_backfill_series(
 
         normalized[entity_id] = [by_second[key] for key in sorted(by_second)]
 
+    # Text metrics (workouts, sleep clock-boundaries): a state string plus
+    # per-row attributes. Same window/limit/idempotency rules as numeric points,
+    # but a single historical point is allowed (there is no "live point" pairing
+    # requirement — the live sensor already holds the latest value).
+    normalized_text: dict[str, list[TextBackfillPoint]] = {}
+    for entity_id, points in text_series_by_entity.items():
+        if not isinstance(entity_id, str) or not entity_id.startswith("sensor."):
+            raise BackfillValidationError("backfill targets must be sensor entity IDs")
+        if not isinstance(points, list) or not points:
+            raise BackfillValidationError(
+                f"{entity_id} must contain at least one historical point"
+            )
+        if len(points) > MAX_POINTS_PER_ENTITY:
+            raise BackfillValidationError(
+                f"{entity_id} exceeds the {MAX_POINTS_PER_ENTITY}-point limit"
+            )
+
+        received += len(points)
+        if received > MAX_POINTS_PER_REQUEST:
+            raise BackfillValidationError(
+                f"backfill exceeds the {MAX_POINTS_PER_REQUEST}-point request limit"
+            )
+
+        by_second_text: dict[int, TextBackfillPoint] = {}
+        for raw_point in points:
+            if not isinstance(raw_point, TextBackfillPoint):
+                raise BackfillValidationError(f"{entity_id} contains a malformed point")
+            try:
+                timestamp = float(raw_point.timestamp)
+            except (TypeError, ValueError) as exc:
+                raise BackfillValidationError(
+                    f"{entity_id} contains a non-numeric timestamp"
+                ) from exc
+            if not math.isfinite(timestamp):
+                raise BackfillValidationError(f"{entity_id} contains a non-finite timestamp")
+            if not isinstance(raw_point.state, str) or not raw_point.state:
+                raise BackfillValidationError(f"{entity_id} contains an empty state")
+            if len(raw_point.state) > MAX_STATE_LENGTH:
+                raise BackfillValidationError(
+                    f"{entity_id} state exceeds the {MAX_STATE_LENGTH}-character limit"
+                )
+            attributes = _validate_backfill_attributes(entity_id, raw_point.attributes)
+
+            second = round(timestamp)
+            if second in by_second_text:
+                duplicates += 1
+            by_second_text[second] = TextBackfillPoint(
+                timestamp=timestamp, state=raw_point.state, attributes=attributes
+            )
+            earliest = timestamp if earliest is None else min(earliest, timestamp)
+            latest = timestamp if latest is None else max(latest, timestamp)
+
+        normalized_text[entity_id] = [by_second_text[key] for key in sorted(by_second_text)]
+
     if earliest is None or latest is None:
         raise BackfillValidationError("backfill contains no valid points")
     if latest > now_ts + MAX_CLOCK_SKEW_SECONDS:
@@ -179,9 +263,40 @@ def validate_backfill_series(
     return ValidatedBackfillBatch(
         request_id=validated_request_id,
         series_by_entity=normalized,
+        text_series_by_entity=normalized_text,
         received_points=received,
         duplicate_points=duplicates,
     )
+
+
+def _validate_backfill_attributes(
+    entity_id: str, attributes: Any
+) -> dict[str, Any] | None:
+    """Validate per-row text attributes and confirm they serialize within limits."""
+    if attributes is None:
+        return None
+    if not isinstance(attributes, dict):
+        raise BackfillValidationError(f"{entity_id} attributes must be an object")
+    for key in attributes:
+        if not isinstance(key, str):
+            raise BackfillValidationError(f"{entity_id} attribute keys must be strings")
+    try:
+        encoded = json.dumps(attributes, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError) as exc:
+        raise BackfillValidationError(
+            f"{entity_id} attributes are not JSON-serializable"
+        ) from exc
+    if len(encoded) > MAX_ATTRIBUTES_JSON_LENGTH:
+        raise BackfillValidationError(
+            f"{entity_id} attributes exceed the "
+            f"{MAX_ATTRIBUTES_JSON_LENGTH}-character limit"
+        )
+    return attributes
+
+
+def _all_backfill_entities(batch: ValidatedBackfillBatch) -> list[str]:
+    """Every entity the batch will write, numeric and text alike."""
+    return list(batch.series_by_entity) + list(batch.text_series_by_entity)
 
 
 async def async_commit_backfill(hass: Any, batch: ValidatedBackfillBatch) -> BackfillCommitResult:
@@ -241,7 +356,7 @@ def _validate_recorder_instance(instance: Any, batch: ValidatedBackfillBatch) ->
     if entity_filter is not None:
         excluded = [
             entity_id
-            for entity_id in batch.series_by_entity
+            for entity_id in _all_backfill_entities(batch)
             if not entity_filter(entity_id)
         ]
         if excluded:
@@ -301,6 +416,7 @@ def _commit_batch_sync(instance: Any, batch: ValidatedBackfillBatch) -> Backfill
     from sqlalchemy import select
     from homeassistant.components.recorder.db_schema import (
         SCHEMA_VERSION,
+        StateAttributes,
         States,
         StatesMeta,
     )
@@ -309,6 +425,11 @@ def _commit_batch_sync(instance: Any, batch: ValidatedBackfillBatch) -> Backfill
         raise BackfillCompatibilityError(
             f"loaded recorder schema {SCHEMA_VERSION} is not approved for backfill"
         )
+    if batch.text_series_by_entity and any(
+        not hasattr(StateAttributes, column)
+        for column in ("attributes_id", "hash", "shared_attrs")
+    ):
+        raise BackfillCompatibilityError("recorder StateAttributes model is incompatible")
     required_columns = (
         "metadata_id",
         "state",
@@ -385,6 +506,55 @@ def _commit_batch_sync(instance: Any, batch: ValidatedBackfillBatch) -> Backfill
                     )
                 )
 
+        # Text metrics: each row keeps its own state string and its own
+        # attributes (a StateAttributes row deduped by content within this
+        # transaction and against existing rows).
+        attributes_cache: dict[str, int] = {}
+        for entity_id, text_points in batch.text_series_by_entity.items():
+            metadata_id = session.execute(
+                select(StatesMeta.metadata_id).where(StatesMeta.entity_id == entity_id)
+            ).scalar_one_or_none()
+            if metadata_id is None:
+                raise BackfillEntityNotReadyError(
+                    f"{entity_id} has not reached recorder metadata yet"
+                )
+
+            lo = text_points[0].timestamp
+            hi = text_points[-1].timestamp
+            existing_seconds = {
+                round(timestamp)
+                for timestamp in session.execute(
+                    select(States.last_updated_ts).where(
+                        States.metadata_id == metadata_id,
+                        States.last_updated_ts >= lo - 1.0,
+                        States.last_updated_ts <= hi + 1.0,
+                    )
+                ).scalars()
+                if timestamp is not None
+            }
+
+            for point in text_points:
+                second = round(point.timestamp)
+                if second in existing_seconds:
+                    existing_skipped += 1
+                    continue
+                existing_seconds.add(second)
+                attributes_id = _get_or_create_attributes_id(
+                    session, StateAttributes, point.attributes, attributes_cache
+                )
+                new_rows.append(
+                    States(
+                        metadata_id=metadata_id,
+                        state=point.state,
+                        last_updated_ts=point.timestamp,
+                        last_changed_ts=None,
+                        last_reported_ts=None,
+                        attributes_id=attributes_id,
+                        old_state_id=None,
+                        origin_idx=0,
+                    )
+                )
+
         if new_rows:
             session.add_all(new_rows)
             session.flush()
@@ -403,7 +573,7 @@ def _commit_batch_sync(instance: Any, batch: ValidatedBackfillBatch) -> Backfill
         received=batch.received_points,
         inserted=inserted,
         skipped=batch.duplicate_points + existing_skipped,
-        entities=len(batch.series_by_entity),
+        entities=len(batch.series_by_entity) + len(batch.text_series_by_entity),
     )
     _LOGGER.debug(
         "Health Bridge backfill committed request=%s entities=%d "
@@ -415,6 +585,67 @@ def _commit_batch_sync(instance: Any, batch: ValidatedBackfillBatch) -> Backfill
         result.skipped,
     )
     return result
+
+
+def _encode_shared_attrs(attributes: dict[str, Any]) -> str:
+    """Serialize attributes the way the recorder stores ``shared_attrs``.
+
+    Prefer the recorder's own JSON encoder so a row we insert is byte-identical
+    to one the live path would have written (and therefore dedupes against it);
+    fall back to a deterministic dump if that private helper ever moves.
+    """
+    try:
+        from homeassistant.components.recorder.db_schema import JSON_DUMP
+
+        encoded = JSON_DUMP(attributes)
+        return encoded if isinstance(encoded, str) else encoded.decode("utf-8")
+    except Exception:  # noqa: BLE001 - any failure falls back to stdlib json
+        return json.dumps(attributes, ensure_ascii=False, separators=(",", ":"))
+
+
+def _get_or_create_attributes_id(
+    session: Any,
+    state_attributes_cls: Any,
+    attributes: dict[str, Any] | None,
+    cache: dict[str, int],
+) -> int | None:
+    """Return an attributes_id for ``attributes``, reusing an existing row.
+
+    Rows are matched on the recorder's ``hash`` + ``shared_attrs`` so back-dated
+    workout/sleep-boundary history keeps accurate per-row attributes without
+    inserting a duplicate StateAttributes row for identical content.
+    """
+    if not attributes:
+        return None
+
+    from sqlalchemy import select
+
+    shared_attrs = _encode_shared_attrs(attributes)
+    if shared_attrs in cache:
+        return cache[shared_attrs]
+
+    hash_shared = getattr(state_attributes_cls, "hash_shared_attrs", None)
+    hash_value = int(hash_shared(shared_attrs)) if callable(hash_shared) else None
+
+    query = select(state_attributes_cls.attributes_id).where(
+        state_attributes_cls.shared_attrs == shared_attrs
+    )
+    if hash_value is not None:
+        query = query.where(state_attributes_cls.hash == hash_value)
+    existing = session.execute(query.limit(1)).scalar_one_or_none()
+    if existing is not None:
+        cache[shared_attrs] = existing
+        return existing
+
+    row = (
+        state_attributes_cls(hash=hash_value, shared_attrs=shared_attrs)
+        if hash_value is not None
+        else state_attributes_cls(shared_attrs=shared_attrs)
+    )
+    session.add(row)
+    session.flush()
+    cache[shared_attrs] = row.attributes_id
+    return row.attributes_id
 
 
 def _set_future_result_if_pending(future: asyncio.Future[Any], result: Any) -> None:
