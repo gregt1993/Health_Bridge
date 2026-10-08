@@ -14,7 +14,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "0.4.8";
+  const VERSION = "0.4.9";
 
   /* ------------------------------------------------------------------ *
    * Value helpers (ported from the original button-card field logic).  *
@@ -1260,8 +1260,24 @@
    * Registration.                                                      *
    * ------------------------------------------------------------------ */
 
+  // Define an element so it survives HA swapping its custom-element registry.
+  //
+  // If this bundle evaluates BEFORE HA installs its scoped custom-element
+  // registry (an early extra_js_url import, or a warm cache winning the race
+  // against app.*.js), our define() lands in the registry that is live now but
+  // that Lovelace will no longer read after the swap — the card then renders as
+  // "Custom element doesn't exist". We snapshot the current registry, define in
+  // it, and also re-define once <home-assistant> exists (which marks the swap
+  // complete) IF the registry object has since changed. whenDefined() then
+  // resolves and Lovelace rebuilds the error card in place. Both get() guards
+  // keep this a no-op when we loaded after the swap (the common, fixed path).
   function define(tag, cls) {
-    if (!customElements.get(tag)) customElements.define(tag, cls);
+    const registry = window.customElements;
+    if (!registry.get(tag)) registry.define(tag, cls);
+    registry.whenDefined("home-assistant").then(() => {
+      const current = window.customElements;
+      if (current !== registry && !current.get(tag)) current.define(tag, cls);
+    }).catch(() => {});
   }
 
   define("health-bridge-card-editor", HBCardEditor);

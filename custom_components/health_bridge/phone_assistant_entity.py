@@ -34,7 +34,7 @@ def pal_migrate_entity_name(
     device = next(
         (
             item
-            for item in device_registry.devices.values()
+            for item in device_registry.devices
             if (DOMAIN, policy.device_identifier) in item.identifiers
         ),
         None,

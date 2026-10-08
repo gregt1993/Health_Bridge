@@ -509,6 +509,29 @@ METRIC_ATTRIBUTES_MAP = {
         "icon": "mdi:run-fast",
     },
 
+    # -------- Apple Watch Activity Rings --------
+    # State is the completed value; the daily goal and percent-complete arrive as
+    # per-datapoint attributes (goal, percent) and are exposed as state attributes.
+    # All three reset at the start of the activity day (total_increasing).
+    "move_ring": {
+        "device_class": "energy",
+        "native_unit_of_measurement": UnitOfEnergy.KILO_CALORIE,
+        "state_class": "total_increasing",
+        "icon": "mdi:fire",
+    },
+    "exercise_ring": {
+        "device_class": "duration",
+        "native_unit_of_measurement": UnitOfTime.MINUTES,
+        "state_class": "total_increasing",
+        "icon": "mdi:run",
+    },
+    "stand_ring": {
+        "device_class": "duration",
+        "native_unit_of_measurement": UnitOfTime.HOURS,
+        "state_class": "total_increasing",
+        "icon": "mdi:human-handsup",
+    },
+
     # -------- Dietary macros (new) --------
     "dietary_energy_consumed": {
         "device_class": "energy",

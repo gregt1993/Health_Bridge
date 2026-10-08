@@ -424,7 +424,7 @@ def _restored_group_name(
 ) -> str | None:
     """Recover PAL's last group name from its persistent device registry entry."""
     identifier = (DOMAIN, f"phone_assistant_link_{user_id}_{group_id}")
-    for device in dr.async_get(hass).devices.values():
+    for device in dr.async_get(hass).devices:
         if identifier not in device.identifiers:
             continue
         device_name = device.name or ""

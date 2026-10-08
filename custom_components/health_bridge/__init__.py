@@ -62,7 +62,7 @@ CONFIG_SCHEMA = vol.Schema(
 
 # Built-in Lovelace cards. Bump CARD_VERSION whenever the JS changes so the
 # `?v=` query busts the browser cache (same lesson as the promo-site deploy).
-CARD_VERSION = "0.4.8"
+CARD_VERSION = "0.4.9"
 _CARD_URL = "/health_bridge/health-bridge-cards.js"
 
 
@@ -131,7 +131,7 @@ def _repair_health_device_ownership(
     """Move HAL entities off a PAL-owned duplicate created by the old global id."""
     device_registry = dr.async_get(hass)
     entity_registry = er.async_get(hass)
-    devices = list(device_registry.devices.values())
+    devices = list(device_registry.devices)
 
     identifiers = {
         identifier
@@ -586,7 +586,15 @@ _DISPLAY_NAME_OVERRIDES = {
     "wake_time": "Wake Time",
     "net_calories": "Net Calories",
     "last_apple_workout": "Last Apple Workout",
+    "move_ring": "Move Ring",
+    "exercise_ring": "Exercise Ring",
+    "stand_ring": "Stand Ring",
 }
+
+# Apple Watch Activity Rings. Their completed value is the sensor state; the
+# daily goal and percent-complete travel as per-datapoint attributes and are
+# surfaced as state attributes (goal, percent).
+_ACTIVITY_RING_METRICS = {"move_ring", "exercise_ring", "stand_ring"}
 
 # --- Setup / teardown ---------------------------------------------------------
 
@@ -698,8 +706,17 @@ async def _register_frontend(hass: HomeAssistant) -> None:
         except OSError:
             token = CARD_VERSION
         resource_url = f"{_CARD_URL}?v={token}"
-        frontend.add_extra_js_url(hass, resource_url)
-        await _upsert_lovelace_resource(hass, resource_url)
+        # Prefer the storage-backed Lovelace resource: the frontend loads it
+        # AFTER its own bootstrap, once the scoped custom-element registry has
+        # been installed, so the cards register where Lovelace reads them.
+        # add_extra_js_url injects an import into index.html that evaluates
+        # DURING bootstrap and can win the race against app.*.js, defining the
+        # elements in a registry the frontend later discards. Only fall back to
+        # extra-JS when there is no storage resource to carry the cards (YAML
+        # mode); the card bundle also self-heals via a registry-swap guard.
+        persisted = await _upsert_lovelace_resource(hass, resource_url)
+        if not persisted:
+            frontend.add_extra_js_url(hass, resource_url)
         data["frontend_registered"] = True
         _LOGGER.info(
             "Health Bridge: registered built-in dashboard cards v%s", CARD_VERSION
@@ -712,13 +729,16 @@ async def _register_frontend(hass: HomeAssistant) -> None:
 
 async def _upsert_lovelace_resource(
     hass: HomeAssistant, resource_url: str
-) -> None:
+) -> bool:
     """Persist the cards module in Lovelace's resource collection.
 
-    `frontend.add_extra_js_url` is process-local and may be registered after an
-    already-connected browser has rebuilt its dashboard during an HA restart.
-    A storage-backed Lovelace resource is present in the next bootstrap payload,
-    which removes that race. YAML-mode dashboards keep the extra-JS fallback.
+    A storage-backed Lovelace resource is present in the next bootstrap payload
+    and is loaded by the frontend AFTER it has installed the scoped
+    custom-element registry, so the cards register where Lovelace reads them.
+    Returns True when such a resource is in place (matched, updated, or
+    created); False when the resource collection is unavailable or not
+    storage-backed (YAML mode), in which case the caller keeps the
+    process-local extra-JS fallback.
     """
     lovelace_data = hass.data.get("lovelace")
     resources = getattr(lovelace_data, "resources", None)
@@ -728,7 +748,7 @@ async def _upsert_lovelace_resource(
         _LOGGER.debug(
             "Health Bridge: Lovelace resources unavailable; using extra-JS fallback"
         )
-        return
+        return False
 
     if not getattr(resources, "loaded", False):
         await resources.async_load()
@@ -748,19 +768,20 @@ async def _upsert_lovelace_resource(
                     "Health Bridge: updated persistent dashboard resource to %s",
                     resource_url,
                 )
-        return
+        return True
 
     create_item = getattr(resources, "async_create_item", None)
     if create_item is None:
         _LOGGER.debug(
             "Health Bridge: dashboard resources are not storage-backed; using extra-JS fallback"
         )
-        return
+        return False
 
     await create_item({"res_type": "module", "url": resource_url})
     _LOGGER.info(
         "Health Bridge: added persistent dashboard resource %s", resource_url
     )
+    return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -1068,16 +1089,27 @@ def _setup_webhook(hass: HomeAssistant) -> None:
             # is kept as an attribute so automations/cards read clean values. The
             # whole array is logged (one logbook entry per new workout) after the
             # loop, so two workouts synced together each get their own entry.
-            workout_attrs = None
+            extra_attrs = None
             if metric_name == "last_apple_workout":
                 workout_datapoints = list(datapoints)
                 payload = datapoints[-1] or {}
                 latest_value = _compose_workout_state(payload)
                 latest_timestamp = payload.get("last_synced") or payload.get("end_time")
-                workout_attrs = dict(payload)
+                extra_attrs = dict(payload)
             else:
                 latest_value = datapoints[-1].get("value")
                 latest_timestamp = datapoints[-1].get("timestamp")
+                # Activity Rings carry their daily goal + percent-complete alongside
+                # the completed value; surface both as state attributes.
+                if metric_name in _ACTIVITY_RING_METRICS:
+                    ring_dp = datapoints[-1]
+                    ring_attrs = {}
+                    if ring_dp.get("goal") is not None:
+                        ring_attrs["goal"] = ring_dp.get("goal")
+                    if ring_dp.get("percent") is not None:
+                        ring_attrs["percent"] = ring_dp.get("percent")
+                    if ring_attrs:
+                        extra_attrs = ring_attrs
 
             if latest_value is None:
                 skipped_entities += 1
@@ -1118,7 +1150,7 @@ def _setup_webhook(hass: HomeAssistant) -> None:
                     attrs,
                     latest_value,
                     latest_timestamp,
-                    workout_attrs,
+                    extra_attrs,
                 )
                 user_entities[metric_name] = entry.entity_id
                 applied_entities += 1
@@ -1129,7 +1161,7 @@ def _setup_webhook(hass: HomeAssistant) -> None:
                         metric_name,
                         latest_value,
                         latest_timestamp,
-                        workout_attrs,
+                        extra_attrs,
                     )
                     applied_entities += 1
                 else:
