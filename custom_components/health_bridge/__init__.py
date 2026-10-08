@@ -22,7 +22,7 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.storage import Store
 from homeassistant.config_entries import ConfigEntry
 
-from .const import DOMAIN, METRIC_ATTRIBUTES_MAP
+from .const import DOMAIN, METRIC_ATTRIBUTES_MAP, iter_device_entries
 from .history_backfill import (
     BACKFILL_PROTOCOL_VERSION,
     BackfillCompatibilityError,
@@ -131,7 +131,7 @@ def _repair_health_device_ownership(
     """Move HAL entities off a PAL-owned duplicate created by the old global id."""
     device_registry = dr.async_get(hass)
     entity_registry = er.async_get(hass)
-    devices = list(device_registry.devices)
+    devices = iter_device_entries(device_registry)
 
     identifiers = {
         identifier

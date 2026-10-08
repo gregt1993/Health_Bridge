@@ -7,7 +7,7 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.util import slugify
 
-from .const import DOMAIN
+from .const import DOMAIN, iter_device_entries
 from .phone_assistant import PALGroupPolicyState
 
 
@@ -34,7 +34,7 @@ def pal_migrate_entity_name(
     device = next(
         (
             item
-            for item in device_registry.devices
+            for item in iter_device_entries(device_registry)
             if (DOMAIN, policy.device_identifier) in item.identifiers
         ),
         None,

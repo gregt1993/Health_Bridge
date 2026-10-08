@@ -19,6 +19,18 @@ from homeassistant.const import (
 DOMAIN = "health_bridge"
 DEFAULT_ICON = "mdi:heart-pulse"
 
+
+def iter_device_entries(device_registry):
+    """Return the registry's DeviceEntry objects across HA versions.
+
+    `DeviceRegistry.devices` has been a mapping (device_id -> DeviceEntry), where
+    plain iteration yields id strings; newer cores may expose the entries
+    directly. Handle both so device lookups never call `.identifiers` on a str.
+    """
+    devices = device_registry.devices
+    values = getattr(devices, "values", None)
+    return list(values() if callable(values) else devices)
+
 # device_class/state_class are strings; sensor.py coerces them to Enums safely
 METRIC_ATTRIBUTES_MAP = {
     # -------- Internal / Time --------

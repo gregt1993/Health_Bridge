@@ -23,7 +23,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.typing import StateType
 from homeassistant.util import slugify
 
-from .const import DOMAIN, METRIC_ATTRIBUTES_MAP
+from .const import DOMAIN, METRIC_ATTRIBUTES_MAP, iter_device_entries
 from .phone_assistant import (
     PALGroupPolicyState,
     PALScreenTimeState,
@@ -764,7 +764,7 @@ def _migrate_pal_screen_time_entity_name(
     device = next(
         (
             item
-            for item in device_registry.devices
+            for item in iter_device_entries(device_registry)
             if (DOMAIN, state.device_identifier) in item.identifiers
         ),
         None,

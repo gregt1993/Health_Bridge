@@ -23,7 +23,7 @@ from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
+from .const import DOMAIN, iter_device_entries
 
 PAL_PROTOCOL_VERSION = 3
 PAL_REQUEST_TYPE = "phone_assistant_link"
@@ -424,7 +424,7 @@ def _restored_group_name(
 ) -> str | None:
     """Recover PAL's last group name from its persistent device registry entry."""
     identifier = (DOMAIN, f"phone_assistant_link_{user_id}_{group_id}")
-    for device in dr.async_get(hass).devices:
+    for device in iter_device_entries(dr.async_get(hass)):
         if identifier not in device.identifiers:
             continue
         device_name = device.name or ""
