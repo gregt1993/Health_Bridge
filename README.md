@@ -1,4 +1,4 @@
-# Health Bridge
+# Health Bridge: the Home Assistant integration for Health Assistant Link
 
 <p align="center">
   <img src="https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/8c/0a/b3/8c0ab330-3e85-27b2-8532-e1f912c29fb6/AppIcon-0-0-1x_U007ephone-0-1-85-220.png/460x0w.webp" alt="Health Assistant Link Icon" width="120"/>
