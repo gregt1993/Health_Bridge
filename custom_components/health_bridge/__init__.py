@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+import dataclasses
 import math
 import os
 import re
@@ -62,7 +63,7 @@ CONFIG_SCHEMA = vol.Schema(
 
 # Built-in Lovelace cards. Bump CARD_VERSION whenever the JS changes so the
 # `?v=` query busts the browser cache (same lesson as the promo-site deploy).
-CARD_VERSION = "0.4.9"
+CARD_VERSION = "0.5.0"
 _CARD_URL = "/health_bridge/health-bridge-cards.js"
 
 
@@ -405,6 +406,7 @@ def _prepare_backfill_batch(hass: HomeAssistant, data: dict, user_id: str):
 
     series_by_entity: dict[str, list[tuple[float, float]]] = {}
     text_series_by_entity: dict[str, list[TextBackfillPoint]] = {}
+    daily_total_entities: set[str] = set()
     for metric_name, datapoints in health_data.items():
         if not isinstance(datapoints, list):
             raise BackfillValidationError(
@@ -457,12 +459,15 @@ def _prepare_backfill_batch(hass: HomeAssistant, data: dict, user_id: str):
             points.append((timestamp, value))
 
         series_by_entity[entity_id] = points
+        if METRIC_ATTRIBUTES_MAP[metric_name].get("state_class") == "total_increasing":
+            daily_total_entities.add(entity_id)
 
-    return validate_backfill_series(
+    batch = validate_backfill_series(
         data.get("request_id"),
         series_by_entity,
         text_series_by_entity=text_series_by_entity,
     )
+    return dataclasses.replace(batch, daily_total_entities=frozenset(daily_total_entities))
 
 
 def _coerce_iso_utc(value) -> str | None:

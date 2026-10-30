@@ -7,7 +7,7 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.util import slugify
 
-from .const import DOMAIN, iter_device_entries
+from .const import DOMAIN
 from .phone_assistant import PALGroupPolicyState
 
 
@@ -31,13 +31,8 @@ def pal_migrate_entity_name(
     """Apply the configured phone name to PAL devices and entity IDs only."""
     desired_device_name = f"{policy.user_id} — {policy.name}"
     device_registry = dr.async_get(hass)
-    device = next(
-        (
-            item
-            for item in iter_device_entries(device_registry)
-            if (DOMAIN, policy.device_identifier) in item.identifiers
-        ),
-        None,
+    device = device_registry.async_get_device(
+        identifiers={(DOMAIN, policy.device_identifier)}
     )
     if device is not None and device.name != desired_device_name:
         device_registry.async_update_device(device.id, name=desired_device_name)

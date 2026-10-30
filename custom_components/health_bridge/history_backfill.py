@@ -42,7 +42,8 @@ RECORDER_TASK_TIMEOUT_SECONDS = 45
 # Version-pinned on purpose. A recorder schema change disables only backfill;
 # legacy/live sensor updates continue normally until compatibility is verified.
 SUPPORTED_RECORDER_SCHEMA_VERSIONS = frozenset({53})
-SUPPORTED_RECORDER_DIALECTS = frozenset({"sqlite"})
+# "mysql" is also what the recorder reports for MariaDB.
+SUPPORTED_RECORDER_DIALECTS = frozenset({"sqlite", "mysql"})
 
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
@@ -94,6 +95,9 @@ class ValidatedBackfillBatch:
     text_series_by_entity: dict[str, list[TextBackfillPoint]] = field(
         default_factory=dict
     )
+    # Daily running totals (steps, active calories…). Live readings of these
+    # that newer history shows were missing late-arriving samples are corrected.
+    daily_total_entities: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -413,7 +417,7 @@ def _make_recorder_task(
 
 def _commit_batch_sync(instance: Any, batch: ValidatedBackfillBatch) -> BackfillCommitResult:
     """Commit every entity in ``batch`` in one recorder-thread transaction."""
-    from sqlalchemy import select
+    from sqlalchemy import delete, select, update
     from homeassistant.components.recorder.db_schema import (
         SCHEMA_VERSION,
         StateAttributes,
@@ -445,6 +449,9 @@ def _commit_batch_sync(instance: Any, batch: ValidatedBackfillBatch) -> Backfill
 
     session = instance.get_session()
     inserted = 0
+    replaced = 0
+    removed = 0
+    corrected = 0
     existing_skipped = 0
     new_rows: list[Any] = []
     try:
@@ -473,26 +480,55 @@ def _commit_batch_sync(instance: Any, batch: ValidatedBackfillBatch) -> Backfill
 
             lo = points[0][0]
             hi = points[-1][0]
-            existing_seconds = {
-                round(timestamp)
-                for timestamp in session.execute(
-                    select(States.last_updated_ts).where(
-                        States.metadata_id == metadata_id,
-                        # Query a full second beyond each edge because
-                        # idempotency compares rounded seconds, not raw floats.
-                        States.last_updated_ts >= lo - 1.0,
-                        States.last_updated_ts <= hi + 1.0,
-                    )
-                ).scalars()
-                if timestamp is not None
+            # Newest backfill wins. Each batch is the app's latest view of the
+            # window (late Watch samples included), so rows an earlier backfill
+            # wrote here are rewritten or removed rather than kept beside the
+            # new series — keeping both is what made the history zig-zag.
+            # Live rows are never touched.
+            window_rows = session.execute(
+                select(
+                    States.state_id,
+                    States.last_updated_ts,
+                    States.last_changed_ts,
+                    States.last_reported_ts,
+                    States.old_state_id,
+                ).where(
+                    States.metadata_id == metadata_id,
+                    # Query a full second beyond each edge because
+                    # idempotency compares rounded seconds, not raw floats.
+                    States.last_updated_ts >= lo - 1.0,
+                    States.last_updated_ts <= hi + 1.0,
+                )
+            ).all()
+            replaceable = _replaceable_backfill_rows(
+                session, States, instance, entity_id, metadata_id, window_rows
+            )
+            protected_seconds = {
+                round(row.last_updated_ts)
+                for row in window_rows
+                if row.last_updated_ts is not None and row.state_id not in replaceable
             }
+            replaceable_by_second: dict[int, int] = {}
+            for row in window_rows:
+                if row.state_id in replaceable:
+                    replaceable_by_second.setdefault(round(row.last_updated_ts), row.state_id)
 
+            written_seconds: set[int] = set()
             for timestamp, value in points:
                 second = round(timestamp)
-                if second in existing_seconds:
+                if second in protected_seconds or second in written_seconds:
                     existing_skipped += 1
                     continue
-                existing_seconds.add(second)
+                written_seconds.add(second)
+                reuse_id = replaceable_by_second.get(second)
+                if reuse_id is not None:
+                    session.execute(
+                        update(States)
+                        .where(States.state_id == reuse_id)
+                        .values(state=_state_str(value), last_updated_ts=timestamp)
+                    )
+                    replaced += 1
+                    continue
                 new_rows.append(
                     States(
                         metadata_id=metadata_id,
@@ -505,6 +541,24 @@ def _commit_batch_sync(instance: Any, batch: ValidatedBackfillBatch) -> Backfill
                         origin_idx=0,
                     )
                 )
+
+            if entity_id in batch.daily_total_entities:
+                corrected += _correct_lagging_live_rows(
+                    session, States, instance, entity_id, metadata_id,
+                    window_rows, replaceable, points,
+                )
+
+            stale_ids = [
+                state_id
+                for second, state_id in replaceable_by_second.items()
+                if second not in written_seconds
+            ]
+            # Duplicate backfill rows at one second keep only the first.
+            kept = set(replaceable_by_second.values())
+            stale_ids.extend(state_id for state_id in replaceable if state_id not in kept)
+            if stale_ids:
+                session.execute(delete(States).where(States.state_id.in_(stale_ids)))
+                removed += len(stale_ids)
 
         # Text metrics: each row keeps its own state string and its own
         # attributes (a StateAttributes row deduped by content within this
@@ -571,17 +625,21 @@ def _commit_batch_sync(instance: Any, batch: ValidatedBackfillBatch) -> Backfill
         schema_version=int(instance.schema_version),
         database=_dialect_name(instance),
         received=batch.received_points,
-        inserted=inserted,
+        # Rewritten rows count as written: they now hold this batch's value.
+        inserted=inserted + replaced,
         skipped=batch.duplicate_points + existing_skipped,
         entities=len(batch.series_by_entity) + len(batch.text_series_by_entity),
     )
     _LOGGER.debug(
         "Health Bridge backfill committed request=%s entities=%d "
-        "received=%d inserted=%d skipped=%d",
+        "received=%d inserted=%d replaced=%d removed=%d corrected_live=%d skipped=%d",
         result.request_id,
         result.entities,
         result.received,
-        result.inserted,
+        inserted,
+        replaced,
+        removed,
+        corrected,
         result.skipped,
     )
     return result
@@ -646,6 +704,143 @@ def _get_or_create_attributes_id(
     session.flush()
     cache[shared_attrs] = row.attributes_id
     return row.attributes_id
+
+
+def _replaceable_backfill_rows(
+    session: Any,
+    states_cls: Any,
+    instance: Any,
+    entity_id: str,
+    metadata_id: int,
+    window_rows: list[Any],
+) -> set[int]:
+    """State IDs in the window that an earlier backfill wrote and nothing needs.
+
+    Backfill rows are written with no old_state_id, last_changed_ts or
+    last_reported_ts. A row is only replaceable if no other row chains to it
+    (old_state_id), and it is not the entity's newest row or the state the
+    recorder will chain the next live write to. Live rows therefore stay.
+    """
+    from sqlalchemy import select
+
+    candidates = {
+        row.state_id
+        for row in window_rows
+        if row.old_state_id is None
+        and row.last_changed_ts is None
+        and row.last_reported_ts is None
+        and row.last_updated_ts is not None
+    }
+    if not candidates:
+        return set()
+
+    referenced = set(
+        session.execute(
+            select(states_cls.old_state_id).where(
+                states_cls.old_state_id.in_(candidates)
+            )
+        ).scalars()
+    )
+    candidates -= referenced
+
+    newest = session.execute(
+        select(states_cls.state_id)
+        .where(states_cls.metadata_id == metadata_id)
+        .order_by(states_cls.last_updated_ts.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    candidates.discard(newest)
+
+    states_manager = getattr(instance, "states_manager", None)
+    last_committed = getattr(states_manager, "_last_committed_id", None)
+    if isinstance(last_committed, dict):
+        candidates.discard(last_committed.get(entity_id))
+    return candidates
+
+
+def _correct_lagging_live_rows(
+    session: Any,
+    states_cls: Any,
+    instance: Any,
+    entity_id: str,
+    metadata_id: int,
+    window_rows: list[Any],
+    replaceable: set[int],
+    points: list[tuple[float, float]],
+) -> int:
+    """Raise earlier live readings of a daily total that this history covers.
+
+    A live reading is HealthKit's total as the phone knew it then. Watch
+    samples reach the phone in batches, so a reading sent before a batch
+    arrived is short. When this batch (HealthKit's later, complete view)
+    reports a higher total for the same local day at or before the reading's
+    time, the reading was provably missing samples and takes that figure.
+    A reading is never lowered, only its state value changes (the row and its
+    old_state_id chain stay), and the entity's current state is left alone.
+    """
+    from bisect import bisect_right
+
+    from sqlalchemy import select, update
+    from homeassistant.util import dt as dt_util
+
+    live_rows = [
+        row
+        for row in window_rows
+        if row.state_id not in replaceable and row.last_updated_ts is not None
+    ]
+    if not live_rows or not points:
+        return 0
+
+    protected: set[int] = set()
+    newest = session.execute(
+        select(states_cls.state_id)
+        .where(states_cls.metadata_id == metadata_id)
+        .order_by(states_cls.last_updated_ts.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if newest is not None:
+        protected.add(newest)
+    states_manager = getattr(instance, "states_manager", None)
+    last_committed = getattr(states_manager, "_last_committed_id", None)
+    if isinstance(last_committed, dict) and last_committed.get(entity_id) is not None:
+        protected.add(last_committed[entity_id])
+
+    def local_day(timestamp: float):
+        return dt_util.as_local(dt_util.utc_from_timestamp(timestamp)).date()
+
+    point_times = [timestamp for timestamp, _ in points]
+    current = {
+        row.state_id: row.state
+        for row in session.execute(
+            select(states_cls.state_id, states_cls.state).where(
+                states_cls.state_id.in_([row.state_id for row in live_rows])
+            )
+        )
+    }
+
+    corrected = 0
+    for row in live_rows:
+        if row.state_id in protected:
+            continue
+        index = bisect_right(point_times, row.last_updated_ts) - 1
+        if index < 0:
+            continue
+        point_ts, point_value = points[index]
+        if local_day(point_ts) != local_day(row.last_updated_ts):
+            continue
+        try:
+            live_value = float(current.get(row.state_id))
+        except (TypeError, ValueError):
+            continue  # unavailable/unknown: not a reading to correct
+        if not math.isfinite(live_value) or point_value <= live_value:
+            continue
+        session.execute(
+            update(states_cls)
+            .where(states_cls.state_id == row.state_id)
+            .values(state=_state_str(point_value))
+        )
+        corrected += 1
+    return corrected
 
 
 def _set_future_result_if_pending(future: asyncio.Future[Any], result: Any) -> None:

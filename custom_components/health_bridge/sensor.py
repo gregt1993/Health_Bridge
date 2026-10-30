@@ -23,7 +23,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.typing import StateType
 from homeassistant.util import slugify
 
-from .const import DOMAIN, METRIC_ATTRIBUTES_MAP, iter_device_entries
+from .const import DOMAIN, METRIC_ATTRIBUTES_MAP
 from .phone_assistant import (
     PALGroupPolicyState,
     PALScreenTimeState,
@@ -761,13 +761,8 @@ def _migrate_pal_screen_time_entity_name(
 ) -> None:
     desired_device_name = f"{state.user_id} — Screen Time"
     device_registry = dr.async_get(hass)
-    device = next(
-        (
-            item
-            for item in iter_device_entries(device_registry)
-            if (DOMAIN, state.device_identifier) in item.identifiers
-        ),
-        None,
+    device = device_registry.async_get_device(
+        identifiers={(DOMAIN, state.device_identifier)}
     )
     if device is not None and device.name != desired_device_name:
         device_registry.async_update_device(device.id, name=desired_device_name)

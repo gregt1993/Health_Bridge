@@ -14,7 +14,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "0.4.9";
+  const VERSION = "0.5.0";
 
   /* ------------------------------------------------------------------ *
    * Value helpers (ported from the original button-card field logic).  *
@@ -381,15 +381,48 @@
       border-radius: 999px; /* clamps to half-height → pill ends */
     }
     .hb-card.hb-trace .graph svg { display: block; }
-    /* Hypnogram card: eyebrow + graph + footer (no big headline). */
-    .hb-card.hb-hypno {
-      grid-template-columns: 1fr 54px;
-      grid-template-rows: min-content auto min-content;
+    /* Sleep Details: total + window/stats header over an inset hypnogram. */
+    .hb-card.hb-sleepx {
+      grid-template-columns: 1fr auto;
+      grid-template-rows: auto auto;
       grid-template-areas:
-        "eyebrow icon"
-        "graph graph"
-        "foot foot";
+        "head side"
+        "graph graph";
+      row-gap: 10px;
+      padding: 14px 16px;
+      border-radius: min(var(--hb-radius), 24px);
     }
+    .sx-head { grid-area: head; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+    .sx-head .eyebrow { align-self: flex-start; display: flex; align-items: center; gap: 5px; font-size: 8px; letter-spacing: 1.6px; }
+    .sx-head .eyebrow ha-icon { --mdc-icon-size: 12px; width: 12px; height: 12px; color: var(--hb-dim); }
+    .sx-big {
+      font-size: 32px; font-weight: 300; letter-spacing: -1.5px;
+      line-height: 1; color: var(--hb-text); white-space: nowrap;
+    }
+    .sx-side {
+      grid-area: side; align-self: end; justify-self: end;
+      display: flex; flex-direction: column; align-items: flex-end; gap: 2px;
+    }
+    .sx-window { font-size: 12px; font-weight: 500; color: var(--hb-text); white-space: nowrap; }
+    .sx-window i { font-style: normal; color: var(--hb-faint); margin: 0 4px; }
+    .sx-sub { font-size: 10px; color: var(--hb-dim); white-space: nowrap; }
+    .sx-sub b { color: var(--hb-text); font-weight: 600; }
+    .sx-graph {
+      grid-area: graph; width: 100%;
+      padding: 8px 10px 6px;
+      border-radius: 16px;
+      background: var(--hb-sub-bg);
+      border: var(--hb-sub-border, none);
+      box-shadow: var(--hb-inset-window);
+    }
+    .sx-graph svg { display: block; width: 100%; height: auto; overflow: visible; }
+    .sx-graph .sx-lk { fill: var(--hb-dim); font-size: 9px; font-weight: 600; }
+    .sx-graph .sx-lv { fill: var(--hb-text); font-size: 9px; font-weight: 500; }
+    .sx-graph .sx-ax { fill: var(--hb-faint); font-size: 8.5px; }
+    .sx-graph .sx-grid { stroke: var(--hb-faint); opacity: .2; stroke-width: 1; }
+    .sx-graph .sx-vgrid { stroke-dasharray: 3 4; }
+    .sx-graph .sx-link { stroke-width: 2; stroke-linecap: round; opacity: .5; }
+
     .graph { grid-area: graph; width: 100%; }
     .graph svg { width: 100%; height: auto; display: block; }
     .graph .hb-axis { fill: var(--hb-faint); font-size: 10px; }
@@ -563,9 +596,12 @@
       const now = Date.now();
       const userChanged = this._histUser !== user;
       this._histUser = user;
+      const liveIds = this.liveSuffixes
+        ? this.liveSuffixes().map((m) => `sensor.${m}_${user}`)
+        : [this.primaryEntity(user)];
       const liveSig =
         `${this._config.style}|${this._config.theme}|` +
-        (this._hass.states[this.primaryEntity(user)] || {}).state;
+        liveIds.map((id) => (this._hass.states[id] || {}).state).join("|");
       const stale = userChanged || !this._lastFetch || now - this._lastFetch > 60000;
       if (stale) {
         if (this._histInFlight) return;
@@ -815,73 +851,73 @@
     }
   };
 
-  // Apple-style sleep hypnogram: stage bands over time (Awake→Deep, top→bottom).
+  // Compact hypnogram for the Sleep Details card. Stage names + durations sit
+  // in a left gutter so capsules never run under text.
   // segs: [{t0, t1, v}] in epoch seconds; v: 3 awake, 2 rem, 1 core, 0 deep, -1 unspecified.
-  // Colours mirror Apple Health: coral awake, cyan REM, blue Core, indigo Deep.
-  function svgHypnogram(segs, startS, endS) {
-    const W = 680, H = 300, padL = 8, padR = 14, padT = 6, padB = 26;
-    const plotW = W - padL - padR, plotH = H - padT - padB, rowH = plotH / 4;
-    const span = endS - startS || 1;
-    const xS = (t) => padL + Math.max(0, Math.min(1, (t - startS) / span)) * plotW;
+  // lanes: [{name, label}] top→bottom (Awake, REM, Core, Deep). note: shown when no segs.
+  function svgSleepLanes(segs, startS, endS, lanes, note) {
+    const W = 340, BAND = 22, H = BAND * 4, X0 = 74, X1 = W - 4;
     const SC = { 3: "#E9724C", 2: "#53C7EC", 1: "#1E7BE5", 0: "#3A38A6" };
-    const labels = ["Awake", "REM", "Core", "Deep"];
-    const rowTop = (r) => padT + r * rowH;
-    const yCenter = (r) => rowTop(r) + rowH * 0.62; // capsules sit below the label
-    const capH = Math.min(22, rowH * 0.42);
+    const cy = (lane) => lane * BAND + BAND / 2;
+    const lane = (v) => 3 - v;
     const sleepv = (v) => v === 0 || v === 1 || v === 2;
-    const uid = "hbsl" + Math.floor(Math.random() * 1e9);
+    const uid = "hbsx" + Math.floor(Math.random() * 1e9);
+    const f = (n) => n.toFixed(1);
 
-    let out = `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" xmlns:xlink="http://www.w3.org/1999/xlink" role="img" aria-label="Sleep stages">`;
+    let out = `<svg viewBox="0 0 ${W} ${H + 14}" role="img" aria-label="Sleep stages">`;
     out += `<defs>`;
     out += `<linearGradient id="${uid}-a" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${SC[3]}" stop-opacity="1"/><stop offset="1" stop-color="${SC[3]}" stop-opacity="0.12"/></linearGradient>`;
     out += `<linearGradient id="${uid}-u" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${SC[2]}" stop-opacity="0.70"/><stop offset="0.5" stop-color="${SC[1]}" stop-opacity="0.55"/><stop offset="1" stop-color="${SC[0]}" stop-opacity="0.62"/></linearGradient>`;
     out += `</defs>`;
 
-    // Row separators + labels inside each band (Apple layout).
-    for (let r = 0; r < 4; r++) {
-      const yt = rowTop(r);
-      if (r > 0) out += `<line class="hb-grid" x1="${padL}" y1="${yt.toFixed(1)}" x2="${W - padR}" y2="${yt.toFixed(1)}"/>`;
-      out += `<text class="hb-axis-strong" x="${padL + 2}" y="${(yt + 15).toFixed(1)}">${labels[r]}</text>`;
-    }
-    out += `<line class="hb-grid" x1="${padL}" y1="${(padT + plotH).toFixed(1)}" x2="${W - padR}" y2="${(padT + plotH).toFixed(1)}"/>`;
+    lanes.forEach((l, i) => {
+      out += `<line class="sx-grid" x1="${X0}" y1="${cy(i)}" x2="${X1}" y2="${cy(i)}"/>`;
+      out += `<text class="sx-lk" x="0" y="${cy(i) + 3}">${esc(l.name)}</text>`;
+      out += `<text class="sx-lv" x="${X0 - 8}" y="${cy(i) + 3}" text-anchor="end">${esc(l.label)}</text>`;
+    });
 
-    // Time axis.
-    const stepH = Math.max(1, Math.round(span / 3600 / 5)) * 3600;
-    for (let t = Math.ceil(startS / 3600) * 3600; t <= endS; t += stepH) {
-      const x = xS(t).toFixed(1);
-      out += `<line class="hb-grid" x1="${x}" y1="${padT}" x2="${x}" y2="${(padT + plotH).toFixed(1)}" stroke-dasharray="3 4"/>`;
-      out += `<text class="hb-axis" x="${x}" y="${H - 8}" text-anchor="middle">${esc(fmtAxisHour(t))}</text>`;
+    if (!segs.length) {
+      out += `<text class="sx-ax" x="${(X0 + X1) / 2}" y="${H / 2 + 3}" text-anchor="middle">${esc(note)}</text>`;
+      return out + `</svg>`;
     }
 
-    // Unspecified sleep → tall vertical-gradient block spanning REM→Deep (behind).
+    const span = endS - startS || 1;
+    const x = (t) => X0 + Math.max(0, Math.min(1, (t - startS) / span)) * (X1 - X0);
+    const mid = (X0 + X1) / 2;
+    [X0, mid, X1].forEach((gx) => {
+      out += `<line class="sx-grid sx-vgrid" x1="${gx}" y1="0" x2="${gx}" y2="${H}"/>`;
+    });
+    out += `<text class="sx-ax" x="${X0}" y="${H + 11}" text-anchor="start">${esc(fmtAxisHour(startS))}</text>`;
+    out += `<text class="sx-ax" x="${mid}" y="${H + 11}" text-anchor="middle">${esc(fmtAxisHour((startS + endS) / 2))}</text>`;
+    out += `<text class="sx-ax" x="${X1}" y="${H + 11}" text-anchor="end">${esc(fmtAxisHour(endS))}</text>`;
+
+    // Unspecified sleep → gradient block spanning REM→Deep (behind).
     segs.forEach((s) => {
       if (s.v !== -1) return;
-      const x = xS(s.t0), w = Math.max(4, xS(s.t1) - x);
-      const top = yCenter(1), bottom = yCenter(3);
-      out += `<rect x="${x.toFixed(1)}" y="${top.toFixed(1)}" width="${w.toFixed(1)}" height="${(bottom - top).toFixed(1)}" rx="8" ry="8" fill="url(#${uid}-u)"/>`;
+      const bx = x(s.t0), bw = Math.max(2.5, x(s.t1) - bx);
+      out += `<rect x="${f(bx)}" y="${cy(1)}" width="${f(bw)}" height="${cy(3) - cy(1)}" rx="3" fill="url(#${uid}-u)"/>`;
     });
 
-    // Connectors between consecutive sleep stages.
+    // Connectors between consecutive sleep stages, coloured by the stage entered.
     for (let i = 0; i < segs.length - 1; i++) {
       const a = segs[i], b = segs[i + 1];
-      if (!sleepv(a.v) || !sleepv(b.v)) continue;
-      const x = xS(b.t0).toFixed(1);
-      out += `<line x1="${x}" y1="${yCenter(3 - a.v).toFixed(1)}" x2="${x}" y2="${yCenter(3 - b.v).toFixed(1)}" stroke="${SC[b.v]}" stroke-width="3" stroke-linecap="round" opacity="0.5"/>`;
+      if (!sleepv(a.v) || !sleepv(b.v) || a.v === b.v) continue;
+      const gx = f(x(b.t0));
+      out += `<line class="sx-link" x1="${gx}" y1="${cy(lane(a.v))}" x2="${gx}" y2="${cy(lane(b.v))}" stroke="${SC[b.v]}"/>`;
     }
 
-    // Sleep-stage capsules.
+    // Stage capsules.
     segs.forEach((s) => {
       if (!sleepv(s.v)) return;
-      const r = 3 - s.v, cy = yCenter(r), x = xS(s.t0), w = Math.max(4, xS(s.t1) - x);
-      out += `<rect x="${x.toFixed(1)}" y="${(cy - capH / 2).toFixed(1)}" width="${w.toFixed(1)}" height="${capH.toFixed(1)}" rx="5" ry="5" fill="${SC[s.v]}" style="filter:drop-shadow(0 0 5px ${SC[s.v]}55)"/>`;
+      const bx = x(s.t0), bw = Math.max(2.5, x(s.t1) - bx);
+      out += `<rect x="${f(bx)}" y="${cy(lane(s.v)) - 4.5}" width="${f(bw)}" height="9" rx="3" fill="${SC[s.v]}"/>`;
     });
 
-    // Awake → tall thin coral spikes rising from the Awake band down to REM (on top).
+    // Awake → fading coral columns from the Awake lane down to REM (on top).
     segs.forEach((s) => {
       if (s.v !== 3) return;
-      const x = xS(s.t0), w = Math.max(5, xS(s.t1) - x);
-      const top = rowTop(0) + rowH * 0.28, bottom = yCenter(1);
-      out += `<rect x="${x.toFixed(1)}" y="${top.toFixed(1)}" width="${w.toFixed(1)}" height="${(bottom - top).toFixed(1)}" rx="${Math.min(w / 2, 5).toFixed(1)}" fill="url(#${uid}-a)"/>`;
+      const bx = x(s.t0), bw = Math.max(2.5, x(s.t1) - bx);
+      out += `<rect x="${f(bx)}" y="4" width="${f(bw)}" height="${cy(1) - 4}" rx="2.5" fill="url(#${uid}-a)"/>`;
     });
 
     return out + `</svg>`;
@@ -1123,40 +1159,75 @@
   class HBSleepDetailsCard extends HBBaseCard {
     static get kind() { return "sleep-details"; }
     static get usesHistory() { return true; }
-    getCardSize() { return 5; }
+    getCardSize() { return 4; }
     metricSuffixes() { return ["sleep_details"]; }
+    // Repaint (from the cached timeline) whenever any headline value changes.
+    liveSuffixes() {
+      return [
+        "sleep_details",
+        "sleep_duration",
+        "sleep_deep_hours",
+        "sleep_rem_hours",
+        "sleep_core_hours",
+        "sleep_awake_hours",
+        "asleep_time",
+        "wake_time",
+      ];
+    }
     primaryEntity(user) { return `sensor.sleep_details_${user}`; }
 
-    async _loadHistory(user) {
-      const hass = this._hass, S = (m) => `sensor.${m}_${user}`;
+    _sessionBounds(user) {
+      const S = (m) => `sensor.${m}_${user}`;
       const parseTs = (id) => {
-        const r = rawState(hass, S(id));
+        const r = rawState(this._hass, S(id));
         if (!r || ["unknown", "unavailable"].includes(r)) return null;
         const d = new Date(r);
         return Number.isNaN(d.getTime()) ? null : d.getTime();
       };
+      const bed = parseTs("asleep_time"), wake = parseTs("wake_time");
+      return bed && wake && wake > bed ? { bed, wake } : null;
+    }
+
+    async _loadHistory(user) {
       // Bound the window to the sleep session when we can; else last 14h.
-      let start = parseTs("asleep_time"), end = parseTs("wake_time");
+      const session = this._sessionBounds(user);
       const now = Date.now();
-      if (start && end && end > start) {
-        start -= 20 * 60 * 1000;
-        end += 20 * 60 * 1000;
+      let start, end;
+      if (session) {
+        start = session.bed - 20 * 60 * 1000;
+        end = session.wake + 20 * 60 * 1000;
       } else {
         end = now;
         start = now - 14 * 3600 * 1000;
       }
-      const raw = await this._fetchHistory(S("sleep_details"), start, end);
-      const seq = (raw || [])
+      const raw = await this._fetchHistory(`sensor.sleep_details_${user}`, start, end);
+      if (raw === null) {
+        this._hist = { segs: [], error: true };
+        this._renderCached(user);
+        return;
+      }
+      const startS = start / 1000;
+      const seq = raw
         .map((x) => ({ t: Number(x.t), v: parseInt(x.v, 10) }))
-        .filter((p) => Number.isFinite(p.t) && Number.isFinite(p.v))
+        // Drop the synthetic "state at start_time" row: it carries whatever
+        // stage was current before the window, not a stage from this night.
+        .filter((p) => Number.isFinite(p.t) && Number.isFinite(p.v) && p.t > startS + 1)
         .sort((a, b) => a.t - b.t);
+      // The final stage ends at wake time when known, not at the window edge.
+      const lastEnd = session ? session.wake / 1000 : end / 1000;
       const segs = [];
       for (let i = 0; i < seq.length; i++) {
         const t0 = seq[i].t;
-        const t1 = i + 1 < seq.length ? seq[i + 1].t : end / 1000;
+        const t1 = i + 1 < seq.length ? seq[i + 1].t : Math.max(lastEnd, t0);
         if (t1 > t0) segs.push({ t0, t1, v: seq[i].v });
       }
-      this._hist = { segs, startS: start / 1000, endS: end / 1000 };
+      let s0 = segs.length ? segs[0].t0 : startS;
+      let s1 = segs.length ? segs[segs.length - 1].t1 : end / 1000;
+      if (session) {
+        s0 = Math.min(s0, session.bed / 1000);
+        s1 = Math.max(s1, session.wake / 1000);
+      }
+      this._hist = { segs, startS: s0, endS: s1 };
       this._renderCached(user);
     }
 
@@ -1166,24 +1237,46 @@
 
     _paint(user) {
       const hass = this._hass, S = (m) => `sensor.${m}_${user}`;
-      const total = numState(hass, S("sleep_duration"));
-      const foot = total == null
-        ? "Awaiting sleep data"
-        : `${fmtHours(total)} asleep · last night`;
+      const num = (m) => {
+        const v = numState(hass, S(m));
+        return v == null ? null : Math.max(0, v);
+      };
+      const total = num("sleep_duration");
+      // Awake is reported in minutes; the other stages in hours.
+      const lanes = [
+        { name: "Awake", h: (num("sleep_awake_hours") ?? 0) / 60 },
+        { name: "REM", h: num("sleep_rem_hours") ?? 0 },
+        { name: "Core", h: num("sleep_core_hours") ?? 0 },
+        { name: "Deep", h: num("sleep_deep_hours") ?? 0 },
+      ];
+      lanes.forEach((l) => { l.label = fmtHours(l.h); });
+      const restH = lanes[1].h + lanes[3].h;
+      const restPct = total ? Math.round((restH / total) * 100) : 0;
+      const efficiency = total ? Math.round((total / (total + lanes[0].h)) * 100) : null;
+
+      const eyebrow = esc((this._config.title || "Last night").toUpperCase());
+      const head = `
+        <div class="sx-head">
+          <div class="eyebrow"><ha-icon icon="mdi:weather-night"></ha-icon>${eyebrow}</div>
+          <b class="sx-big">${total == null ? "—" : fmtHours(total)}</b>
+        </div>`;
+
+      const side = total == null
+        ? `<div class="sx-side"><span class="sx-sub">Awaiting sleep data</span></div>`
+        : `<div class="sx-side">
+            <span class="sx-window">${esc(fmtClock(rawState(hass, S("asleep_time"))))}<i>→</i>${esc(fmtClock(rawState(hass, S("wake_time"))))}</span>
+            <span class="sx-sub"><b>${fmtHours(restH)}</b> deep + REM · ${restPct}%</span>
+            ${efficiency == null ? "" : `<span class="sx-sub"><b>${efficiency}%</b> efficient</span>`}
+          </div>`;
 
       const h = this._hist || { segs: [] };
-      const graph = h.segs.length
-        ? svgHypnogram(h.segs, h.startS, h.endS)
-        : `<div class="placeholder">Collecting sleep-stage history…</div>`;
+      const note = h.error ? "Couldn’t load sleep-stage history" : this._hist ? "No sleep-stage history yet" : "Loading timeline…";
+      const graph = `<div class="sx-graph">${svgSleepLanes(h.segs, h.startS, h.endS, lanes, note)}</div>`;
 
-      return `
-        <div class="eyebrow">SLEEP DETAILS</div>
-        <ha-icon class="icon" icon="mdi:chart-timeline-variant"></ha-icon>
-        <div class="graph">${graph}</div>
-        <div class="foot">${esc(foot)}</div>`;
+      return head + side + graph;
     }
   }
-  HBSleepDetailsCard.layoutClass = "hb-hypno";
+  HBSleepDetailsCard.layoutClass = "hb-sleepx";
 
   /* ------------------------------------------------------------------ *
    * Minimal GUI editor (style / theme / user / title).                 *
@@ -1307,7 +1400,7 @@
   register(
     "health-bridge-sleep-details-card",
     "Health Bridge · Sleep Details",
-    "Per-stage sleep breakdown with durations and percentages."
+    "Last night's hypnogram with total sleep, window, deep + REM and efficiency."
   );
   register(
     "health-bridge-workout-card",
